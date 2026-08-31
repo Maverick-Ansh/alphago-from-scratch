@@ -73,16 +73,16 @@ from .go import (N, NN, PASS, EMPTY, BLACK, WHITE, NBRS, DIAGS, NDIAG,
                  group_libs, is_legal, is_simple_eye, place_stone,
                  score_tromp_taylor, _tag)
 
-# 3x3 ring around a point, in raster order:
-#   0 1 2
-#   3 . 4
-#   5 6 7
-# The ordering matters: slot k and slot 7-k are opposite offsets, which is what
-# makes the incremental digit patch a one-liner.
-_RING = ((-1, -1), (-1, 0), (-1, 1),
-         (0, -1),           (0, 1),
-         (1, -1),  (1, 0),  (1, 1))
-
+# 3x3 ring around a point, in raster order:                                         # +-- THE RING, AND WHY ITS ORDER MATTERS ------------------------
+#   0 1 2                                                                           # | A pattern is the eight points around a candidate move, read in
+#   3 . 4                                                                           # | reading order. The ordering is not arbitrary: slot k and slot
+#   5 6 7                                                                           # | 7-k are always opposite offsets, so if point q sits in slot k
+# The ordering matters: slot k and slot 7-k are opposite offsets, which is what     # | of point r, then r sits in slot 7-k of q. That one fact is
+# makes the incremental digit patch a one-liner.                                    # | what turns updating a pattern after a move into a single
+_RING = ((-1, -1), (-1, 0), (-1, 1),                                                # | arithmetic patch instead of a recomputation. Each of the eight
+         (0, -1),           (0, 1),                                                 # | slots holds one base-4 digit, so a whole pattern is one
+         (1, -1),  (1, 0),  (1, 1))                                                 # | integer below 65536, small enough for a dense table with no
+                                                                                    # | hashing and therefore no collisions at all.
 N_PAT_RAW = 4 ** 8          # 65536 colour patterns
 N_RESP = 9                  # 8 neighbour offsets + "not a response"
 N_TAC = 4                   # capture1, capture2plus, save_atari, self_atari
@@ -93,12 +93,12 @@ POW4 = (4 ** np.arange(8)).astype(np.int32)
 _D_OFF, _D_EMPTY = 0, 1
 
 
-def _build_surr(n):
-    """SURR[p, k] = the k-th ring neighbour of p, or -1 if off the board."""
-    nn = n * n
-    surr = np.full((nn, 8), -1, dtype=np.int32)
-    for r in range(n):
-        for c in range(n):
+def _build_surr(n):                                                                 # +-- PRECOMPUTED RING NEIGHBOURS --------------------------------
+    """SURR[p, k] = the k-th ring neighbour of p, or -1 if off the board."""        # | Which board point sits in each of the eight slots around each
+    nn = n * n                                                                      # | point, worked out once at import. Off-board slots hold -1.
+    surr = np.full((nn, 8), -1, dtype=np.int32)                                     # | Doing this ahead of time removes all row and column
+    for r in range(n):                                                              # | arithmetic, and all edge-of-board tests, from the inner loop
+        for c in range(n):                                                          # | that runs millions of times per second.
             p = r * n + c
             for k, (dr, dc) in enumerate(_RING):
                 rr, cc = r + dr, c + dc
@@ -107,13 +107,13 @@ def _build_surr(n):
     return surr
 
 
-def _ring_symmetries():
-    """The 8 dihedral transforms, as permutations of the ring's 8 slots."""
-    perms = []
-    for flip in (False, True):
-        for rot in range(4):
-            perm = np.empty(8, dtype=np.int64)
-            for k, (dr, dc) in enumerate(_RING):
+def _ring_symmetries():                                                             # +-- THE EIGHT SYMMETRIES AS SLOT PERMUTATIONS ------------------
+    """The 8 dihedral transforms, as permutations of the ring's 8 slots."""         # | A Go shape and its mirror image are the same shape. To use
+    perms = []                                                                      # | that, each of the eight rotations and reflections is written
+    for flip in (False, True):                                                      # | down as a rearrangement of the eight ring slots: apply the
+        for rot in range(4):                                                        # | geometric transform to a slot's offset, then look up which
+            perm = np.empty(8, dtype=np.int64)                                      # | slot the result lands in. These permutations are the only
+            for k, (dr, dc) in enumerate(_RING):                                    # | geometry in the file; everything after works on integers.
                 r, c = dr, dc
                 if flip:
                     c = -c
@@ -133,19 +133,19 @@ def _build_canon_tables():
     classes.  One shared weight vector then serves both colours, exactly as the
     paper computes its features "relative to the current colour to play".
     """
-    perms = _ring_symmetries()
-    codes = np.arange(N_PAT_RAW, dtype=np.int64)
-    digits = np.empty((N_PAT_RAW, 8), dtype=np.int64)
-    for k in range(8):
-        digits[:, k] = (codes // (4 ** k)) % 4
-
-    pow4 = 4 ** np.arange(8, dtype=np.int64)
-    best = np.full(N_PAT_RAW, np.iinfo(np.int64).max, dtype=np.int64)
-    for perm in perms:
-        np.minimum(best, digits[:, perm] @ pow4, out=best)
-    uniq, canon = np.unique(best, return_inverse=True)
-    canon_b = canon.astype(np.int32)
-
+    perms = _ring_symmetries()                                                      # +-- ONE WEIGHT PER SHAPE, NOT PER ORIENTATION ------------------
+    codes = np.arange(N_PAT_RAW, dtype=np.int64)                                    # | Every one of the 65536 raw patterns is transformed all eight
+    digits = np.empty((N_PAT_RAW, 8), dtype=np.int64)                               # | ways, and the smallest resulting number becomes its class. Two
+    for k in range(8):                                                              # | patterns that are rotations of each other get the same class
+        digits[:, k] = (codes // (4 ** k)) % 4                                      # | and therefore share a single learned weight, which cuts the
+                                                                                    # | parameters to 8740 and multiplies the effective training data
+    pow4 = 4 ** np.arange(8, dtype=np.int64)                                        # | by eight. Two tables are built rather than one because
+    best = np.full(N_PAT_RAW, np.iinfo(np.int64).max, dtype=np.int64)               # | patterns are stored in absolute colours: reading a code as-is
+    for perm in perms:                                                              # | gives black's view, and swapping the two stone digits first
+        np.minimum(best, digits[:, perm] @ pow4, out=best)                          # | gives white's. Choosing the table by whose turn it is costs
+    uniq, canon = np.unique(best, return_inverse=True)                              # | nothing at run time and is what lets one weight vector serve
+    canon_b = canon.astype(np.int32)                                                # | both players, which is the paper's rule that features are
+                                                                                    # | computed relative to the colour to play.
     # swap the two stone digits (2 <-> 3) to get white's view
     swapped = digits.copy()
     swapped[digits == 2] = 3
@@ -161,13 +161,13 @@ CANON_B, CANON_W, N_PAT = _build_canon_tables()
 # --------------------------------------------------------------------------
 # incremental pattern codes
 # --------------------------------------------------------------------------
-@njit(cache=True, inline="always")
-def _digit(v):
-    if v == EMPTY:
-        return 1
-    elif v == BLACK:
-        return 2
-    return 3
+@njit(cache=True, inline="always")                                                  # +-- BUILDING ALL THE CODES FROM SCRATCH ------------------------
+def _digit(v):                                                                      # | Colours become digits: 0 for off the board, 1 for empty, 2 for
+    if v == EMPTY:                                                                  # | black, 3 for white. Absolute colours, not own and opponent,
+        return 1                                                                    # | because own and opponent swap every single move and would
+    elif v == BLACK:                                                                # | invalidate every stored code each turn. This full rebuild
+        return 2                                                                    # | costs eight reads per point and runs once at the start of a
+    return 3                                                                        # | rollout; after that the codes are repaired in place.
 
 
 @njit(cache=True)
@@ -183,38 +183,38 @@ def build_pat(board, surr, pat):
         pat[p] = code
 
 
-@njit(cache=True, inline="always")
-def patch_pat(board, surr, pat, q):
+@njit(cache=True, inline="always")                                                  # +-- REPAIRING CODES AFTER A MOVE -------------------------------
+def patch_pat(board, surr, pat, q):                                                 # | When the colour at one point changes, the only codes that
     """The colour at ``q`` just changed: repair the codes that mention it.
 
     Only q's 8 ring neighbours contain q in their own ring, and q sits in slot
     ``7-k`` of the neighbour found at q's slot ``k``.  So this is 8 single-digit
     patches, not 8 recomputations.
     """
-    d = _digit(board[q])
-    for k in range(8):
-        r = surr[q, k]
-        if r < 0:
-            continue
-        pw = POW4[7 - k]
-        old = (pat[r] // pw) % 4
-        pat[r] += (d - old) * pw
+    d = _digit(board[q])                                                            # | become wrong are those of its eight ring neighbours, because
+    for k in range(8):                                                              # | those are exactly the points that have it in their own ring.
+        r = surr[q, k]                                                              # | Each of those codes is wrong in exactly one digit, and the
+        if r < 0:                                                                   # | antisymmetry of the ring ordering says which one: if the
+            continue                                                                # | changed point sits at slot k of the neighbour's view, it
+        pw = POW4[7 - k]                                                            # | occupies slot 7-k. So the fix is to subtract the old digit's
+        old = (pat[r] // pw) % 4                                                    # | contribution and add the new one, eight times. That is the
+        pat[r] += (d - old) * pw                                                    # | difference between eight operations per move and six hundred
+                                                                                    # | and forty-eight.
 
-
-@njit(cache=True)
-def place_stone_track(board, nbrs, pt, color, buf, seen, tagbox, caps_out):
+@njit(cache=True)                                                                   # +-- PLACING A STONE AND REMEMBERING WHAT VANISHED --------------
+def place_stone_track(board, nbrs, pt, color, buf, seen, tagbox, caps_out):         # | The same capture logic as the rules engine, with one addition:
     """``go.place_stone`` but also reporting *which* points were vacated.
 
     The rollout needs the captured points to patch their pattern codes; the
     plain version throws them away.
     """
-    board[pt] = color
-    opp = 3 - color
-    n_captured = 0
-    last_captured = -1
-    for k in range(4):
-        q = nbrs[pt, k]
-        if q < 0 or board[q] != opp:
+    board[pt] = color                                                               # | the points of every captured stone are written out. The plain
+    opp = 3 - color                                                                 # | version throws them away because nothing else needs them, but
+    n_captured = 0                                                                  # | pattern codes do -- a captured stone changes colour to empty
+    last_captured = -1                                                              # | exactly like a played stone changes colour, and each vacated
+    for k in range(4):                                                              # | point must have its neighbours' patterns repaired too. Missing
+        q = nbrs[pt, k]                                                             # | that would leave the rollout scoring moves against a board
+        if q < 0 or board[q] != opp:                                                # | that no longer exists.
             continue
         ng, nl = group_libs(board, nbrs, q, buf, seen, _tag(tagbox))
         if nl == 0:
@@ -235,19 +235,19 @@ def place_stone_track(board, nbrs, pt, color, buf, seen, tagbox, caps_out):
 # --------------------------------------------------------------------------
 # feature extraction
 # --------------------------------------------------------------------------
-@njit(cache=True, inline="always")
-def response_offset(surr, p, last_move):
-    """Which ring slot of ``last_move`` the candidate ``p`` occupies (else 8)."""
-    if last_move < 0:
-        return 8
-    for k in range(8):
-        if surr[last_move, k] == p:
+@njit(cache=True, inline="always")                                                  # +-- IS THIS MOVE A REPLY TO THE LAST ONE -----------------------
+def response_offset(surr, p, last_move):                                            # | Which of the eight slots around the previous move the
+    """Which ring slot of ``last_move`` the candidate ``p`` occupies (else 8)."""   # | candidate sits in, or 8 for anywhere else. This single feature
+    if last_move < 0:                                                               # | is what stops rollouts from wandering: without it a rollout
+        return 8                                                                    # | answers a threat on one side of the board by playing on the
+    for k in range(8):                                                              # | other, and the game it plays out says nothing about the
+        if surr[last_move, k] == p:                                                 # | position it started from.
             return k
     return 8
 
 
-@njit(cache=True)
-def tactical_features(board, nbrs, p, color, buf, seen, tagbox, scratch, out):
+@njit(cache=True)                                                                   # +-- CAPTURES AND ATARI, COMPUTED EXACTLY -----------------------
+def tactical_features(board, nbrs, p, color, buf, seen, tagbox, scratch, out):      # | Whether a move captures, and whether it leaves a chain with
     """Exact capture / atari features for playing ``color`` at ``p``.
 
     Computed by actually playing the move on a scratch copy of the board.  An
@@ -255,14 +255,14 @@ def tactical_features(board, nbrs, p, color, buf, seen, tagbox, scratch, out):
     most 8 candidates per move and being obviously correct is worth more here
     than being clever.
     """
-    out[0] = 0.0
-    out[1] = 0.0
-    out[2] = 0.0
-    out[3] = 0.0
-
-    # Was any friendly neighbouring chain in atari before the move?
-    in_atari_before = False
-    for k in range(4):
+    out[0] = 0.0                                                                    # | one liberty, cannot be read off the board without working out
+    out[1] = 0.0                                                                    # | what the board would become. So the move is played on a
+    out[2] = 0.0                                                                    # | scratch copy and the result measured. Incremental liberty
+    out[3] = 0.0                                                                    # | tracking would be faster, but this runs for at most eight
+                                                                                    # | candidates per move, and being obviously correct is worth more
+    # Was any friendly neighbouring chain in atari before the move?                 # | here than being clever. Note the atari check has to happen
+    in_atari_before = False                                                         # | before the move as well as after: rescuing a chain means it
+    for k in range(4):                                                              # | had one liberty and now has more, which needs both readings.
         q = nbrs[p, k]
         if q < 0 or board[q] != color:
             continue
@@ -285,10 +285,10 @@ def tactical_features(board, nbrs, p, color, buf, seen, tagbox, scratch, out):
     return ncap
 
 
-@njit(cache=True)
-def move_scores(board, nbrs, surr, pat, canon, color, last_move,
-                w_pat, w_resp, w_tac, buf, seen, tagbox, scratch, tacbuf,
-                out):
+@njit(cache=True)                                                                   # +-- SCORE EVERY POINT, CHEAPLY ---------------------------------
+def move_scores(board, nbrs, surr, pat, canon, color, last_move,                    # | A flat pass writes the pattern weight plus the default
+                w_pat, w_resp, w_tac, buf, seen, tagbox, scratch, tacbuf,           # | response weight onto every empty point, then a second short
+                out):                                                               # | pass fixes up only the points that are special. At most eight
     """Linear score for every point on the board (-inf on occupied points).
 
     Legality is deliberately *not* checked here -- that is the expensive part,
@@ -301,14 +301,14 @@ def move_scores(board, nbrs, surr, pat, canon, color, last_move,
     discover 8 facts.  Writing the response term only where it differs from the
     default costs 8.  The tactical features ride along in the same fix-up.
     """
-    nn = board.shape[0]
-    base_resp = w_resp[8]                    # "not adjacent to the last move"
-    for p in range(nn):
-        if board[p] != EMPTY:
-            out[p] = -1e30
-        else:
-            out[p] = w_pat[canon[pat[p]]] + base_resp
-    if last_move >= 0 and last_move < nn:
+    nn = board.shape[0]                                                             # | candidates can be a reply to the last move, so asking all
+    base_resp = w_resp[8]                    # "not adjacent to the last move"      # | eighty-one points whether they are special would cost six
+    for p in range(nn):                                                             # | hundred and forty-eight comparisons to learn eight facts.
+        if board[p] != EMPTY:                                                       # | Writing the answer only where it differs costs eight. Legality
+            out[p] = -1e30                                                          # | is deliberately not checked here, because detecting suicide
+        else:                                                                       # | needs a flood fill per point and doing sixty of those per move
+            out[p] = w_pat[canon[pat[p]]] + base_resp                               # | would cost more than everything else in this file put
+    if last_move >= 0 and last_move < nn:                                           # | together.
         for k in range(8):
             p = surr[last_move, k]
             if p < 0 or board[p] != EMPTY:
@@ -325,10 +325,10 @@ def move_scores(board, nbrs, surr, pat, canon, color, last_move,
 # --------------------------------------------------------------------------
 # sampling and playout
 # --------------------------------------------------------------------------
-@njit(cache=True)
-def sample_move(board, nbrs, diags, ndiag, surr, pat, canon, color, ko,
-                last_move, w_pat, w_resp, w_tac,
-                buf, seen, tagbox, scratch, tacbuf, scores, wbuf, temp):
+@njit(cache=True)                                                                   # +-- TURNING SCORES INTO A DRAW ---------------------------------
+def sample_move(board, nbrs, diags, ndiag, surr, pat, canon, color, ko,             # | Exponentiating gives unnormalised probabilities. The maximum
+                last_move, w_pat, w_resp, w_tac,                                    # | is subtracted first, which changes nothing about the
+                buf, seen, tagbox, scratch, tacbuf, scores, wbuf, temp):            # | distribution because the weights are unnormalised anyway, and
     """Draw one move from softmax(scores/temp) restricted to sensible moves.
 
     Sampling is by inverse-CDF over unnormalised weights rather than by adding
@@ -344,12 +344,12 @@ def sample_move(board, nbrs, diags, ndiag, surr, pat, canon, color, ko,
     conditioned on the accepted set -- while paying the flood-fill legality
     test only on the one or two candidates we actually draw.
     """
-    nn = board.shape[0]
-    move_scores(board, nbrs, surr, pat, canon, color, last_move,
-                w_pat, w_resp, w_tac, buf, seen, tagbox, scratch, tacbuf,
-                scores)
-
-    # Shift by the max before exponentiating: the weights are unnormalised, so
+    nn = board.shape[0]                                                             # | keeps the exponential away from overflow. This is done instead
+    move_scores(board, nbrs, surr, pat, canon, color, last_move,                    # | of adding Gumbel noise and taking the largest, which samples
+                w_pat, w_resp, w_tac, buf, seen, tagbox, scratch, tacbuf,           # | from the same distribution but costs two logarithms per point
+                scores)                                                             # | rather than one exponential. Transcendental functions dominate
+                                                                                    # | the cost of a rollout move, so halving their count roughly
+    # Shift by the max before exponentiating: the weights are unnormalised, so      # | halves the cost of the whole rollout.
     # a common offset is free, and it keeps exp() away from overflow.
     smax = -1e29
     for p in range(nn):
@@ -364,17 +364,17 @@ def sample_move(board, nbrs, diags, ndiag, surr, pat, canon, color, ko,
         else:
             wbuf[p] = 0.0
 
-    while total > 1e-300:
-        u = np.random.random() * total
-        acc = 0.0
-        pick = -1
-        for p in range(nn):
-            if wbuf[p] > 0.0:
-                acc += wbuf[p]
-                if acc >= u:
-                    pick = p
-                    break
-                pick = p        # floating-point guard: keep the last live index
+    while total > 1e-300:                                                           # +-- REJECTING WITHOUT DISTORTING -------------------------------
+        u = np.random.random() * total                                              # | A drawn candidate may turn out to be illegal, or to fill one
+        acc = 0.0                                                                   # | of our own eyes. Rather than pre-filtering every point, its
+        pick = -1                                                                   # | weight is zeroed, removed from the running total, and another
+        for p in range(nn):                                                         # | draw is taken. That is exactly sampling from the original
+            if wbuf[p] > 0.0:                                                       # | distribution restricted to the moves that survive, so nothing
+                acc += wbuf[p]                                                      # | is biased, and the expensive legality test is paid for only on
+                if acc >= u:                                                        # | the one or two candidates actually drawn. The eye rule is not
+                    pick = p                                                        # | a style preference: a policy allowed to fill its own eyes will
+                    break                                                           # | destroy its own living groups and the rollout will never reach
+                pick = p        # floating-point guard: keep the last live index    # | a position where both sides want to stop.
         if pick < 0:
             return PASS
         total -= wbuf[pick]
@@ -387,20 +387,20 @@ def sample_move(board, nbrs, diags, ndiag, surr, pat, canon, color, ko,
     return PASS
 
 
-@njit(cache=True)
-def playout(board, ko, to_play, last_move, n_passes, move_no,
-            nbrs, diags, ndiag, surr, canon_b, canon_w,
-            w_pat, w_resp, w_tac, komi, max_moves,
-            buf, seen, tagbox, scratch, tacbuf, scores, wbuf, pat, caps, temp):
+@njit(cache=True)                                                                   # +-- PLAYING THE GAME OUT ---------------------------------------
+def playout(board, ko, to_play, last_move, n_passes, move_no,                       # | The whole leaf evaluation of the search, in one loop. Codes
+            nbrs, diags, ndiag, surr, canon_b, canon_w,                             # | are built once here and then only patched, which is the entire
+            w_pat, w_resp, w_tac, komi, max_moves,                                  # | reason for the machinery above. The colour to move selects
+            buf, seen, tagbox, scratch, tacbuf, scores, wbuf, pat, caps, temp):     # | which of the two canonical tables is read, so one weight
     """Play ``board`` to the end with the rollout policy; return Black's score.
 
     ``board`` is mutated -- callers pass a scratch copy.  This is the whole
     "Evaluation" half of Fig. 3c: the rollout that produces z_L.
     """
-    build_pat(board, surr, pat)
-    while n_passes < 2 and move_no < max_moves:
-        canon = canon_b if to_play == BLACK else canon_w
-        a = sample_move(board, nbrs, diags, ndiag, surr, pat, canon,
+    build_pat(board, surr, pat)                                                     # | vector serves both players. The board passed in is destroyed,
+    while n_passes < 2 and move_no < max_moves:                                     # | so callers hand over a copy. The loop ends on two consecutive
+        canon = canon_b if to_play == BLACK else canon_w                            # | passes, or on a move cap that guarantees termination even if a
+        a = sample_move(board, nbrs, diags, ndiag, surr, pat, canon,                # | repetition the simple-ko rule cannot see were to arise.
                         to_play, ko, last_move, w_pat, w_resp, w_tac,
                         buf, seen, tagbox, scratch, tacbuf, scores, wbuf, temp)
         if a == PASS:
@@ -422,14 +422,14 @@ def playout(board, ko, to_play, last_move, n_passes, move_no,
 # --------------------------------------------------------------------------
 # Python-side owner of the weights
 # --------------------------------------------------------------------------
-class RolloutPolicy:
-    """Weights + scratch for p_pi.  Not thread-safe (the scratch is shared)."""
-
-    def __init__(self, temp=1.0):
-        self.w_pat = np.zeros(N_PAT, dtype=np.float64)
-        self.w_resp = np.zeros(N_RESP, dtype=np.float64)
-        self.w_tac = np.zeros(N_TAC, dtype=np.float64)
-        self.temp = float(temp)
+class RolloutPolicy:                                                                # +-- WEIGHTS PLUS SCRATCH ---------------------------------------
+    """Weights + scratch for p_pi.  Not thread-safe (the scratch is shared)."""     # | The learned weights are three small arrays: one per pattern
+                                                                                    # | class, one per response slot, and one per tactical feature.
+    def __init__(self, temp=1.0):                                                   # | Everything else here is scratch space, allocated once and
+        self.w_pat = np.zeros(N_PAT, dtype=np.float64)                              # | reused, because a rollout runs hundreds of thousands of times
+        self.w_resp = np.zeros(N_RESP, dtype=np.float64)                            # | and allocating inside it would cost more than the arithmetic.
+        self.w_tac = np.zeros(N_TAC, dtype=np.float64)                              # | Sharing that scratch is what makes this object unsafe to use
+        self.temp = float(temp)                                                     # | from two threads at once.
         self._alloc()
 
     def _alloc(self):
@@ -446,15 +446,15 @@ class RolloutPolicy:
     def _canon(self, color):
         return CANON_B if color == BLACK else CANON_W
 
-    # -- inference --------------------------------------------------------
-    def logits(self, pos):
-        """Raw linear scores over the NN points for the player to move."""
-        build_pat(pos.board, SURR, self.pat)
-        move_scores(pos.board, NBRS, SURR, self.pat, self._canon(pos.to_play),
-                    pos.to_play, pos.last_move, self.w_pat, self.w_resp,
-                    self.w_tac, self.buf, self.seen, self.tagbox,
-                    self.scratch, self.tacbuf, self.scores)
-        return self.scores.copy()
+    # -- inference --------------------------------------------------------         # +-- THE PYTHON-FACING SURFACE ----------------------------------
+    def logits(self, pos):                                                          # | Three ways to use the same weights: read the raw scores for
+        """Raw linear scores over the NN points for the player to move."""          # | every point, draw a single move, or play a position out to the
+        build_pat(pos.board, SURR, self.pat)                                        # | end and return the score. The first two rebuild the pattern
+        move_scores(pos.board, NBRS, SURR, self.pat, self._canon(pos.to_play),      # | codes because they are called on positions arriving from
+                    pos.to_play, pos.last_move, self.w_pat, self.w_resp,            # | outside with no history; the third rebuilds once and then
+                    self.w_tac, self.buf, self.seen, self.tagbox,                   # | patches for the rest of the game. Saving keeps only the
+                    self.scratch, self.tacbuf, self.scores)                         # | weights and the temperature, since everything else is derived
+        return self.scores.copy()                                                   # | from the board size at import.
 
     def sample(self, pos):
         build_pat(pos.board, SURR, self.pat)
