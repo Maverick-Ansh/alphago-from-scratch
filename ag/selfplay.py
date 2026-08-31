@@ -110,7 +110,7 @@ class Game:
 
 
 def run_games(n_games, policy_for, rng=None, max_moves=None, record=False,
-              on_step=None):
+              on_step=None, init_positions=None):
     """Play ``n_games`` in lockstep.
 
     ``policy_for(colour, game_index, game)`` returns the policy object that
@@ -118,11 +118,18 @@ def run_games(n_games, policy_for, rng=None, max_moves=None, record=False,
     that each distinct network sees one batched forward pass per step, however
     the games are split between colours or phases.
 
+    ``init_positions`` starts the games from given positions instead of an
+    empty board -- which is how a *rollout from a leaf* is played out in bulk,
+    and what claim C4 needs to compare network evaluation against 100 rollouts.
+
     Returns the finished ``Game`` objects.
     """
     rng = rng or np.random.default_rng()
     max_moves = max_moves or go.MAX_MOVES
     games = [Game() for _ in range(n_games)]
+    if init_positions is not None:
+        for g, p0 in zip(games, init_positions):
+            g.pos = p0.copy()
 
     while True:
         active = [(i, g) for i, g in enumerate(games)
