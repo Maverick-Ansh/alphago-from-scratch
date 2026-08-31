@@ -96,7 +96,53 @@ the second RL pass with the value network as baseline; and anything about
 *(Filled in as the run proceeds — this section records evaluation and
 implementation faults found, with the numbers before and after the fix.)*
 
-**Found before the sweep, by writing the tests first:**
+### The expensive one: a 32-bit counter holding a 64-bit tag
+
+Four data-generation workers died **simultaneously**, each after about 2,150
+seconds, with `munmap_chunk(): invalid pointer` and `double free or corruption
+(out)`. Different seeds, different games, different data — but the *same
+elapsed time*. Independent processes failing at the same elapsed time means a
+fixed operation count, not a data dependency. That is the whole diagnosis in one
+observation.
+
+The flood fill in `group_libs` avoids clearing its 81-entry "visited" array on
+every call — which would cost more than the fill itself — by stamping it with a
+monotonically increasing tag and comparing against the current one. The tag
+counter is `int64`. The array was `int32`.
+
+Past 2³¹ the store silently truncates, so `seen[q] == tag` can never be true
+again. The fill then marks *nothing* as visited, re-appends the same stones
+forever, and runs off the end of the 81-element `buf` into the heap.
+
+At roughly 324 tags per `legal_mask()` call, 2³¹ ⁄ 324 ≈ 6.6M calls — about 35
+minutes of continuous play. Which is exactly when all four died.
+
+**Cost:** 900 completed teacher games, ~35 minutes × 4 cores, lost entirely —
+because the workers only wrote their shard at the end.
+
+**Two fixes, for two separate faults:**
+
+* `seen` is now `int64` everywhere, matching the tag width. 648 bytes.
+  `group_libs` additionally refuses to write past the end of `buf`, so a future
+  width mismatch degrades into a wrong answer instead of heap corruption —
+  which is far harder to trace back to its cause.
+* `gen_expert.py` writes a partial shard every 40 games. The bug destroyed
+  everything only because nothing had been written yet; the worst case is now
+  40 games.
+
+Three regression tests, including one that drives the real entry points across
+2³¹ and requires legality to be unchanged.
+
+Worth stating plainly: **every test passed before this, and the engine was
+correct.** 43 tests covering captures, ko, suicide, scoring, symmetry and search
+signs, and not one of them ran long enough to reach 2³¹. The bug was not in the
+rules, the model, or the measurement — it was in an optimisation that only
+misbehaves after six million calls, and no unit test of a Go rule will ever run
+that long. The thing that caught it was a crash, and the thing that made the
+crash *diagnosable* in one step was that four independent processes died at the
+same elapsed time.
+
+### Found before the sweep, by writing the tests first
 
 1. **PUCT would have confounded the C5 comparison.** The paper writes the
    exploration bonus over `N_r`, its rollout count, which in AlphaGo *is* the
