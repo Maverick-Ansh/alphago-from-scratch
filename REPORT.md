@@ -310,7 +310,32 @@ python tests/test_go.py && python tests/test_features.py \
   && python tests/test_nets.py && python tests/test_mcts.py
 ```
 
-Pipeline order: `gen_expert.py` → `train_rollout.py` → `train_sl.py` →
-`check_eval.py` (**gate**) → `train_rl.py` → `gen_value_data.py` →
-`train_value.py` → `tournament.py` / `eval_value_vs_rollouts.py` /
-`eval_c1_strength.py` → `make_figures.py`.
+Everything in one command, dependency-ordered across two GPUs and resumable
+(each stage skips if its outputs already exist):
+
+```bash
+python scripts/gen_expert.py --games 120 --sims 128 --seed 2000 \
+       --out data/expert_0.npz          # x4, one per core, ~20 min
+python scripts/run_pipeline.py --data data --runs runs   # ~60 min
+```
+
+Stage order inside the driver: `train_rollout` + `train_sl`×3 → **`check_eval`
+(the gate)** → `train_rl` → `gen_value_data` → `train_value` → `tournament` /
+`eval_value_vs_rollouts` / `eval_c1_strength` → `make_figures`.
+
+Then watch it play:
+
+```bash
+python scripts/demo.py --runs runs --black a_rvp --white a_r
+```
+
+### Reproducing the numbers above
+
+The two step sizes that matter are **not** the naive rescalings:
+
+* SL: `--lr 0.01`. 0.03 collapses two widths out of three (§4).
+* Everything is seeded; `--seed` is threaded through every stage.
+
+Figures are regenerated from the result JSONs alone (`make_figures.py --runs`),
+so the JSONs in `runs/` are the durable record — no checkpoint is needed to
+redraw a plot.
