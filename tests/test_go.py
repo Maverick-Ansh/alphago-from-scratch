@@ -235,6 +235,59 @@ def test_no_stone_ever_has_zero_liberties():
                 assert nl > 0, f"dead chain left on board at {q}"
 
 
+def test_tag_counter_survives_int32_range():
+    """Regression: the visited-marker must be as wide as the tag it stores.
+
+    ``seen`` was int32 while tags are int64.  Past 2**31 the store truncated,
+    so ``seen[q] == tag`` was never true, the flood fill marked nothing as
+    visited, and it re-appended the same stones without bound -- running off
+    the end of an 81-element buffer and corrupting the heap.  Four data
+    generation workers died this way after ~35 minutes each.
+
+    A big tag must give exactly the same answer as a small one.
+    """
+    board = np.zeros(g.NN, dtype=np.int8)
+    board[:] = BLACK                      # one chain covering the whole board
+    buf = np.empty(g.NN, dtype=np.int32)
+    seen = np.zeros(g.NN, dtype=np.int64)
+    small = g.group_libs(board, g.NBRS, 0, buf, seen, 1000)
+    assert small == (g.NN, 0), f"whole-board chain: {small}"
+    for tag in (2 ** 31 - 1, 2 ** 31, 2 ** 31 + 5, 2 ** 40):
+        got = g.group_libs(board, g.NBRS, 0, buf, seen, tag)
+        assert got == small, f"tag {tag} gave {got}, expected {small}"
+
+
+def test_shared_scratch_is_wide_enough():
+    """The module-level scratch must have the same property as the local one."""
+    assert g._SEEN.dtype == np.int64, "seen must match the int64 tag width"
+    assert g._TAGBOX.dtype == np.int64
+
+
+def test_long_run_does_not_corrupt():
+    """Drive the tag counter across the old overflow point through the real
+    entry points, not just the kernel, and check the engine still agrees with
+    itself."""
+    # A dense board: is_legal short-circuits on any point with an empty
+    # neighbour without consuming a tag, so an almost-empty board barely
+    # advances the counter at all.
+    rng = np.random.default_rng(0)
+    p = Position()
+    for _ in range(45):
+        idx = np.flatnonzero(p.legal_actions(exclude_eyes=True))
+        idx = idx[idx != PASS]
+        if len(idx) == 0:
+            break
+        p.play(int(rng.choice(idx)))
+
+    g._TAGBOX[0] = 2 ** 31 - 5
+    before = p.legal_actions().copy()
+    for _ in range(50):                   # walks the counter past 2**31
+        p.legal_actions()
+    after = p.legal_actions().copy()
+    assert g._TAGBOX[0] > 2 ** 31, f"counter only reached {g._TAGBOX[0]}"
+    assert np.array_equal(before, after), "legality changed as the tag grew"
+
+
 if __name__ == "__main__":
     import sys, traceback
     fns = [(k, v) for k, v in sorted(globals().items()) if k.startswith("test_")]

@@ -44,14 +44,37 @@ from ag.rollout import RolloutPolicy
 
 
 def gen_shard(n_games, n_sims, seed, out_path, temp_moves=8, temp=1.0,
-              max_open=4, log_every=25):
+              max_open=4, log_every=25, chunk=40):
+    """Generate games, writing a partial shard every ``chunk`` games.
+
+    The first version of this wrote once at the end.  Four workers then died
+    of heap corruption 35 minutes in (see REPORT.md) and every game was lost,
+    because nothing had been written yet.  Checkpointing costs a fraction of a
+    second per chunk and bounds the worst case to ``chunk`` games.
+    """
     rng = np.random.default_rng(seed)
     rp = RolloutPolicy()
     np.random.seed(seed % (2 ** 31))          # numba's RNG lives here
     teacher = MCTS(n_sims=n_sims, lmbda=1.0, rollout=rp, rng=rng)
 
+    base = out_path[:-4] if out_path.endswith(".npz") else out_path
     records = []
+    n_part = 0
+    n_total = 0
     t0 = time.time()
+
+    def flush():
+        nonlocal records, n_part, n_total
+        if not records:
+            return
+        part = f"{base}_part{n_part}.npz"
+        data.save(part, records)
+        n_total += len(records)
+        print(f"[{os.path.basename(base)}] wrote {part} "
+              f"({len(records)} positions)", flush=True)
+        records = []
+        n_part += 1
+
     for gi in range(n_games):
         pos = go.Position()
         # random opening
@@ -87,14 +110,18 @@ def gen_shard(n_games, n_sims, seed, out_path, temp_moves=8, temp=1.0,
 
         if (gi + 1) % log_every == 0:
             el = time.time() - t0
-            print(f"[{os.path.basename(out_path)}] {gi+1}/{n_games} games, "
-                  f"{len(records)} positions, {el:.0f}s "
+            print(f"[{os.path.basename(base)}] {gi+1}/{n_games} games, "
+                  f"{n_total + len(records)} positions, {el:.0f}s "
                   f"({el/(gi+1):.1f}s/game)", flush=True)
+        if (gi + 1) % chunk == 0:
+            flush()
 
-    data.save(out_path, records)
-    print(f"[{os.path.basename(out_path)}] DONE {len(records)} positions -> "
-          f"{out_path} in {time.time()-t0:.0f}s", flush=True)
-    return len(records)
+    flush()
+    with open(base + ".done", "w") as f:
+        f.write(str(n_total) + "\n")
+    print(f"[{os.path.basename(base)}] DONE {n_total} positions in "
+          f"{time.time()-t0:.0f}s", flush=True)
+    return n_total
 
 
 def main():
@@ -105,13 +132,16 @@ def main():
     ap.add_argument("--out", type=str, required=True)
     ap.add_argument("--temp-moves", type=int, default=8)
     ap.add_argument("--temp", type=float, default=1.0)
+    ap.add_argument("--chunk", type=int, default=40,
+                    help="write a partial shard every N games")
     a = ap.parse_args()
-    if os.path.exists(a.out):
-        # Shards are skippable so a killed sweep resumes instead of restarting.
-        print(f"[skip] {a.out} already exists", flush=True)
+    base = a.out[:-4] if a.out.endswith(".npz") else a.out
+    if os.path.exists(base + ".done"):
+        # Completed workers are skippable so a killed sweep resumes.
+        print(f"[skip] {base}.done already exists", flush=True)
         return
     gen_shard(a.games, a.sims, a.seed, a.out,
-              temp_moves=a.temp_moves, temp=a.temp)
+              temp_moves=a.temp_moves, temp=a.temp, chunk=a.chunk)
 
 
 if __name__ == "__main__":

@@ -136,7 +136,7 @@ class FeatureExtractor:                                                         
         self.with_colour = with_colour                                                # | overwritten by the next call, and a caller stacking a batch
         self.n_planes = N_PLANES_VALUE if with_colour else N_PLANES_POLICY            # | would otherwise end up with the same position repeated.
         self.buf = np.empty(NN, dtype=np.int32)                                       # | Planes come out shaped as a square board rather than a flat
-        self.seen = np.zeros(NN, dtype=np.int32)                                      # | list because that is what a convolution consumes.
+        self.seen = np.zeros(NN, dtype=np.int64)                                      # | list because that is what a convolution consumes.
         self.tagbox = np.zeros(1, dtype=np.int64)
         self.scratch = np.zeros(NN, dtype=np.int8)
         self.out = np.zeros((self.n_planes, NN), dtype=np.float32)

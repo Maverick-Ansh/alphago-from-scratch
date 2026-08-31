@@ -434,7 +434,7 @@ class RolloutPolicy:                                                            
 
     def _alloc(self):
         self.buf = np.empty(NN, dtype=np.int32)
-        self.seen = np.zeros(NN, dtype=np.int32)
+        self.seen = np.zeros(NN, dtype=np.int64)
         self.tagbox = np.zeros(1, dtype=np.int64)
         self.scratch = np.zeros(NN, dtype=np.int8)
         self.tacbuf = np.zeros(N_TAC, dtype=np.float64)

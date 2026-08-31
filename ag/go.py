@@ -14,10 +14,14 @@ Design notes
   mean chain is a handful of stones, so a fill costs ~30 array reads -- cheaper
   than maintaining incremental liberty counts, and far easier to verify.
 * The flood fill needs a "visited" array.  Zeroing 81 entries per call would
-  cost more than the fill itself, so instead ``seen`` is ``int32`` and each call
-  stamps it with a monotonically increasing *tag* drawn from ``tagbox`` (a
-  1-element array so numba can mutate it).  A stale entry can never collide
-  with the current tag.
+  cost more than the fill itself, so instead ``seen`` stores a monotonically
+  increasing *tag* drawn from ``tagbox`` (a 1-element array so numba can mutate
+  it).  A stale entry can never collide with the current tag.
+  ``seen`` MUST be int64, the same width as the tag.  It was int32 once, and
+  past 2**31 the store silently truncated, so ``seen[q] == tag`` could never be
+  true again, the fill stopped marking anything visited, and it re-appended the
+  same stones without bound -- straight off the end of ``buf`` and into the
+  heap.  That took about 35 minutes of continuous play to reach.  See REPORT.md.
 * Ko: we implement **simple ko** (an immediate single-stone recapture is
   banned), not positional superko.  This is what fast Go engines use inside
   rollouts.  The deviation from the paper is recorded in REPORT.md.
@@ -114,6 +118,13 @@ def group_libs(board, nbrs, pt, buf, seen, tag):                                
                 n_libs += 1
             elif v == color:
                 seen[q] = tag
+                if n_group >= buf.shape[0]:
+                    # Unreachable while tags are wider than the stores that
+                    # hold them: a chain cannot contain more points than the
+                    # board has.  Kept as a hard stop so that a future width
+                    # mismatch degrades into a wrong answer instead of heap
+                    # corruption, which is far harder to trace back.
+                    return n_group, n_libs
                 buf[n_group] = q
                 n_group += 1
     return n_group, n_libs
@@ -291,7 +302,7 @@ def score_tromp_taylor(board, nbrs, komi):                                      
 # once per simulation step -- cost only the ~250 bytes of real game state.            # | down to the few hundred bytes of real game state rather than
 # --------------------------------------------------------------------------          # | several kilobytes of scratch that would be overwritten
 _BUF = np.empty(NN, dtype=np.int32)                                                   # | immediately anyway.
-_SEEN = np.zeros(NN, dtype=np.int32)
+_SEEN = np.zeros(NN, dtype=np.int64)   # must match the tag width
 _TAGBOX = np.zeros(1, dtype=np.int64)
 _MASK = np.zeros(N_ACTIONS, dtype=np.bool_)
 
