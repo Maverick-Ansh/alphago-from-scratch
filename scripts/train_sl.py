@@ -17,6 +17,17 @@ thousands of steps rather than 340 million -- 50 GPUs for three weeks is the
 one thing that cannot be resized -- with the step size and halving period
 rescaled to match.
 
+On the step size: naively rescaling the paper's alpha = 0.003 from batch 16 to
+batch 256 gives ~0.048, and 0.03 **collapses two widths out of three**.  The
+failure is not divergence, which would be obvious; it is quiet.  Every ReLU in
+the trunk dies, the trunk's gradient becomes exactly zero, and the only
+parameters still learning are the 81 free per-position biases on the output.
+The network then predicts the same point in every position: training loss
+settles at the entropy of the marginal move distribution (~2.9), test accuracy
+freezes at whatever fraction of positions happen to share that point, and test
+loss climbs past ln(81) as the biases overfit.  It looks like a network that is
+training.  The default here is 0.01, which is stable at every width tested.
+
 The split is **by game, not by position**.  Positions within a game differ by
 one stone and share an outcome; splitting by position would put near-duplicates
 on both sides of the split and report a test accuracy that is partly memorised.
@@ -146,7 +157,7 @@ def main():
     ap.add_argument("--layers", type=int, default=5)
     ap.add_argument("--steps", type=int, default=40000)
     ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--lr", type=float, default=0.03)
+    ap.add_argument("--lr", type=float, default=0.01)
     ap.add_argument("--halve-every", type=int, default=12000)
     ap.add_argument("--eval-every", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=0)
