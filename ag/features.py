@@ -44,42 +44,42 @@ from . import go
 from .go import (N, NN, EMPTY, BLACK, WHITE, NBRS, DIAGS, NDIAG,
                  group_libs, is_legal, is_simple_eye, place_stone, _tag)
 
-# plane layout
-P_OWN, P_OPP, P_EMPTY, P_ONES = 0, 1, 2, 3
-P_AGE = 4           # 8 planes
-P_LIB = 12          # 8
-P_CAP = 20          # 8
-P_SELFATARI = 28    # 8
-P_LIBAFTER = 36     # 8
-P_SENSIBLE = 44
-P_ZEROS = 45
-P_COLOUR = 46       # value network only
+# plane layout                                                                        # +-- WHERE EACH FEATURE LIVES ---------------------------------
+P_OWN, P_OPP, P_EMPTY, P_ONES = 0, 1, 2, 3                                            # | Offsets into the plane stack. Six of the twelve feature
+P_AGE = 4           # 8 planes                                                        # | groups are eight planes wide, because the paper turns every
+P_LIB = 12          # 8                                                               # | count into a one-hot bank rather than feeding a number: a
+P_CAP = 20          # 8                                                               # | point with three liberties gets a 1 in the third plane and 0
+P_SELFATARI = 28    # 8                                                               # | everywhere else. A convolution over a raw count would have
+P_LIBAFTER = 36     # 8                                                               # | to learn that four is between three and five and that the
+P_SENSIBLE = 44                                                                       # | difference between one and two matters far more than between
+P_ZEROS = 45                                                                          # | seven and eight; one-hot lets it learn a separate response
+P_COLOUR = 46       # value network only                                              # | to each case and costs only planes, which are cheap.
 
 N_PLANES_POLICY = 46
 N_PLANES_VALUE = 47
 
 
-@njit(cache=True, inline="always")
-def _bucket(v):
-    """One-hot bucket index for a count: 1,2,...,>=8 -> 0..7."""
-    if v <= 1:
-        return 0
-    if v >= 8:
-        return 7
+@njit(cache=True, inline="always")                                                    # +-- BUCKETING COUNTS AT EIGHT --------------------------------
+def _bucket(v):                                                                       # | Counts of one through seven get their own plane and
+    """One-hot bucket index for a count: 1,2,...,>=8 -> 0..7."""                      # | everything from eight upward shares the last one. Beyond
+    if v <= 1:                                                                        # | eight liberties a chain is simply safe and the exact number
+        return 0                                                                      # | carries no tactical meaning, so spending planes to
+    if v >= 8:                                                                        # | distinguish nine from ten would add parameters and no
+        return 7                                                                      # | information.
     return v - 1
 
 
-@njit(cache=True)
-def extract(board, to_play, ko, move_age, nbrs, diags, ndiag,
-            buf, seen, tagbox, scratch, out, with_colour):
-    """Fill ``out`` (n_planes, NN) with the feature planes for this position."""
-    nn = board.shape[0]
-    opp = 3 - to_play
-    out[:, :] = 0.0
-
-    for p in range(nn):
-        v = board[p]
-        if v == to_play:
+@njit(cache=True)                                                                     # +-- THE STATIC PLANES ----------------------------------------
+def extract(board, to_play, ko, move_age, nbrs, diags, ndiag,                         # | One pass writing what is true of the board as it stands.
+            buf, seen, tagbox, scratch, out, with_colour):                            # | Stone colours are recorded as own and opponent rather than
+    """Fill ``out`` (n_planes, NN) with the feature planes for this position."""      # | black and white, so the same learned filter works for both
+    nn = board.shape[0]                                                               # | players and the network never has to learn one set of shapes
+    opp = 3 - to_play                                                                 # | twice. The constant plane of ones gives the convolution a
+    out[:, :] = 0.0                                                                   # | way to tell a real board edge from the zero padding around
+                                                                                      # | it, which is otherwise invisible to it. Stone age is only
+    for p in range(nn):                                                               # | meaningful where a stone stands, and the liberty count is
+        v = board[p]                                                                  # | read by flooding each chain, which repeats work for every
+        if v == to_play:                                                              # | stone in a chain but keeps the code obviously right.
             out[P_OWN, p] = 1.0
         elif v == opp:
             out[P_OPP, p] = 1.0
@@ -98,18 +98,18 @@ def extract(board, to_play, ko, move_age, nbrs, diags, ndiag,
         # Liberties of the chain occupying p.
         if v != EMPTY:
             ng, nl = group_libs(board, nbrs, p, buf, seen, _tag(tagbox))
-            out[P_LIB + _bucket(nl), p] = 1.0
-
-    # The move-dependent planes: what happens if the player to move plays here.
-    for p in range(nn):
-        if board[p] != EMPTY:
-            continue
-        if not is_legal(board, nbrs, p, to_play, ko, buf, seen, tagbox):
-            continue
-        scratch[:] = board
-        _, ncap = place_stone(scratch, nbrs, p, to_play, buf, seen, tagbox)
-        ng, nl = group_libs(scratch, nbrs, p, buf, seen, _tag(tagbox))
-
+            out[P_LIB + _bucket(nl), p] = 1.0                                         # +-- THE PLANES THAT ASK WHAT WOULD HAPPEN --------------------
+                                                                                      # | Capture size, self-atari size and liberties-after-move
+    # The move-dependent planes: what happens if the player to move plays here.       # | cannot be read off the board, because each asks about a
+    for p in range(nn):                                                               # | board that does not exist yet. So the move is played on a
+        if board[p] != EMPTY:                                                         # | scratch copy of every empty legal point in turn and the
+            continue                                                                  # | result measured. This is why extracting features costs about
+        if not is_legal(board, nbrs, p, to_play, ko, buf, seen, tagbox):              # | eighty simulated moves, and why they are computed once and
+            continue                                                                  # | cached rather than recomputed every epoch. Self-atari is
+        scratch[:] = board                                                            # | recorded only when the resulting chain would have exactly
+        _, ncap = place_stone(scratch, nbrs, p, to_play, buf, seen, tagbox)           # | one liberty, and its size is the number of stones that would
+        ng, nl = group_libs(scratch, nbrs, p, buf, seen, _tag(tagbox))                # | then be at risk, which is what makes the difference between
+                                                                                      # | a harmless sacrifice and losing a group.
         if ncap > 0:
             out[P_CAP + _bucket(ncap), p] = 1.0
         # "Self-atari size: how many of own stones would be captured" -- i.e.
@@ -120,23 +120,23 @@ def extract(board, to_play, ko, move_age, nbrs, diags, ndiag,
 
         if not is_simple_eye(board, nbrs, diags, ndiag, p, to_play):
             out[P_SENSIBLE, p] = 1.0
+                                                                                      # +-- THE TWO CONSTANT PLANES ----------------------------------
+    # P_ZEROS stays zero, by construction.                                            # | Sensibleness marks moves that are legal and do not fill our
+    if with_colour:                                                                   # | own eye. The plane of zeros is in the paper and is kept for
+        c = 1.0 if to_play == BLACK else 0.0                                          # | fidelity; it carries no information and exists only as a
+        for p in range(nn):                                                           # | fixed reference the network can use or ignore. Colour to
+            out[P_COLOUR, p] = c                                                      # | play is added only for the value network, because who is to
+    return out                                                                        # | move changes who wins a position but does not change which
+                                                                                      # | move is best-shaped.
 
-    # P_ZEROS stays zero, by construction.
-    if with_colour:
-        c = 1.0 if to_play == BLACK else 0.0
-        for p in range(nn):
-            out[P_COLOUR, p] = c
-    return out
-
-
-class FeatureExtractor:
-    """Owns the scratch buffers; produces (C, N, N) float32 planes."""
-
-    def __init__(self, with_colour=False):
-        self.with_colour = with_colour
-        self.n_planes = N_PLANES_VALUE if with_colour else N_PLANES_POLICY
-        self.buf = np.empty(NN, dtype=np.int32)
-        self.seen = np.zeros(NN, dtype=np.int32)
+class FeatureExtractor:                                                               # +-- OWNING THE SCRATCH, HANDING OUT COPIES -------------------
+    """Owns the scratch buffers; produces (C, N, N) float32 planes."""                # | The buffers are allocated once and reused across every call,
+                                                                                      # | since feature extraction runs millions of times. The output
+    def __init__(self, with_colour=False):                                            # | is copied on the way out because the internal buffer is
+        self.with_colour = with_colour                                                # | overwritten by the next call, and a caller stacking a batch
+        self.n_planes = N_PLANES_VALUE if with_colour else N_PLANES_POLICY            # | would otherwise end up with the same position repeated.
+        self.buf = np.empty(NN, dtype=np.int32)                                       # | Planes come out shaped as a square board rather than a flat
+        self.seen = np.zeros(NN, dtype=np.int32)                                      # | list because that is what a convolution consumes.
         self.tagbox = np.zeros(1, dtype=np.int64)
         self.scratch = np.zeros(NN, dtype=np.int8)
         self.out = np.zeros((self.n_planes, NN), dtype=np.float32)
@@ -151,23 +151,23 @@ class FeatureExtractor:
         return np.stack([self(p) for p in positions])
 
 
-def from_dataset(ds, idx, with_colour=False):
-    """Extract planes for rows ``idx`` of a loaded dataset."""
-    from . import data
-    fx = FeatureExtractor(with_colour=with_colour)
-    out = np.empty((len(idx), fx.n_planes, N, N), dtype=np.float32)
-    for i, j in enumerate(idx):
+def from_dataset(ds, idx, with_colour=False):                                         # +-- FEATURES STRAIGHT FROM STORED RECORDS --------------------
+    """Extract planes for rows ``idx`` of a loaded dataset."""                        # | Data sets hold raw game state, not planes, because planes
+    from . import data                                                                # | are about twenty times larger and because storing state
+    fx = FeatureExtractor(with_colour=with_colour)                                    # | means the feature set can change later without regenerating
+    out = np.empty((len(idx), fx.n_planes, N, N), dtype=np.float32)                   # | hours of games. This rebuilds a position from a stored row
+    for i, j in enumerate(idx):                                                       # | and extracts from it.
         out[i] = fx(data.decode(ds, j))
     return out
 
 
-# --------------------------------------------------------------------------
-# dihedral symmetry
-# --------------------------------------------------------------------------
-# "we exploit symmetries at run-time by dynamically transforming each position
-#  s using the dihedral group of eight reflections and rotations".
-# Used two ways here: to augment the supervised training set 8x, and as the
-# implicit symmetry ensemble at evaluation time.
+# --------------------------------------------------------------------------          # +-- THE EIGHT WAYS TO LOOK AT A BOARD ------------------------
+# dihedral symmetry                                                                   # | A Go position rotated or mirrored is the same position, so
+# --------------------------------------------------------------------------          # | one game record is eight training examples. This is used
+# "we exploit symmetries at run-time by dynamically transforming each position        # | twice: to multiply the supervised training set, and at
+#  s using the dihedral group of eight reflections and rotations".                    # | evaluation time as the ensemble the paper describes, where
+# Used two ways here: to augment the supervised training set 8x, and as the           # | either all eight are averaged or one is picked at random per
+# implicit symmetry ensemble at evaluation time.                                      # | lookup.
 
 def transform_planes(x, k):
     """Apply dihedral element ``k`` (0..7) to a (..., N, N) array."""
@@ -178,18 +178,18 @@ def transform_planes(x, k):
     return np.ascontiguousarray(y)
 
 
-def transform_actions(a, k):
+def transform_actions(a, k):                                                          # +-- ROTATING THE ANSWER WITH THE QUESTION --------------------
     """Map action indices through the same dihedral element.
 
     Built by transforming an index grid rather than by deriving the formula:
     the point of the array below is that it is *the same* transform the planes
     get, so the policy target can never fall out of step with the input.
     """
-    grid = np.arange(NN, dtype=np.int64).reshape(N, N)
-    moved = transform_planes(grid, k).reshape(-1)
-    # moved[i] = index in the ORIGINAL board that lands at position i
-    inv = np.empty(NN, dtype=np.int64)
-    inv[moved] = np.arange(NN)
-    a = np.asarray(a)
-    out = np.where(a < NN, inv[np.clip(a, 0, NN - 1)], NN)
-    return out
+    grid = np.arange(NN, dtype=np.int64).reshape(N, N)                                # | If the board is rotated the target move must rotate with it,
+    moved = transform_planes(grid, k).reshape(-1)                                     # | or every augmented example is mislabelled and training
+    # moved[i] = index in the ORIGINAL board that lands at position i                 # | quietly gets worse forever. The mapping is not derived by
+    inv = np.empty(NN, dtype=np.int64)                                                # | hand: an index grid is put through the very same transform
+    inv[moved] = np.arange(NN)                                                        # | the planes get, which makes it impossible for the two to
+    a = np.asarray(a)                                                                 # | disagree. Inverting that gives, for each original point,
+    out = np.where(a < NN, inv[np.clip(a, 0, NN - 1)], NN)                            # | where it ended up. Pass has no location on the board, so it
+    return out                                                                        # | is left alone.
