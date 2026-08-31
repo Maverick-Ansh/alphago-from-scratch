@@ -25,15 +25,15 @@ from . import features as feat, go
 from .go import BLACK, WHITE, PASS, N, NN
 
 
-class BatchPolicy:
-    """A torch policy net, evaluated over a list of positions at once."""
-
-    needs_planes = True
-
-    def __init__(self, net, device="cpu", temperature=1.0, rng=None,
-                 with_colour=False):
-        self.net = net.to(device).eval()
-        self.device = device
+class BatchPolicy:                                                                    # +-- A NETWORK THAT ANSWERS MANY POSITIONS AT ONCE ------------
+    """A torch policy net, evaluated over a list of positions at once."""             # | Feature planes for a whole list of positions, then one
+                                                                                      # | forward pass for all of them. This is the only reason self-
+    needs_planes = True                                                               # | play is affordable: a graphics processor gets almost none of
+                                                                                      # | its throughput on a batch of one, so playing games one at a
+    def __init__(self, net, device="cpu", temperature=1.0, rng=None,                  # | time would leave it idle between moves. Half precision is
+                 with_colour=False):                                                  # | used because these cards run it several times faster than
+        self.net = net.to(device).eval()                                              # | single precision, and the answer only has to be good enough
+        self.device = device                                                          # | to pick a move.
         self.temperature = temperature
         self.rng = rng if rng is not None else np.random.default_rng()
         self.fx = feat.FeatureExtractor(with_colour=with_colour)
@@ -49,17 +49,17 @@ class BatchPolicy:
             out = self.net(x)
         return out.float().cpu().numpy()
 
-    def choose(self, positions, planes=None):
-        """Sample (or argmax) a legal move for each position."""
-        if planes is None:
-            planes = self.planes(positions)
-        logits = self.logits(planes)
-        actions = np.empty(len(positions), dtype=np.int64)
-        for i, pos in enumerate(positions):
-            legal = pos.legal_actions(exclude_eyes=True)[:NN]
-            z = np.where(legal, logits[i].astype(np.float64), -np.inf)
-            if not np.isfinite(z).any():
-                actions[i] = PASS          # only our own eyes remain: pass
+    def choose(self, positions, planes=None):                                         # +-- FROM SCORES TO A LEGAL MOVE ------------------------------
+        """Sample (or argmax) a legal move for each position."""                      # | The network is never told which moves are legal and will put
+        if planes is None:                                                            # | weight on occupied points, so illegal and eye-filling moves
+            planes = self.planes(positions)                                           # | are removed before anything is sampled. If nothing at all is
+        logits = self.logits(planes)                                                  # | left, the only sensible act is to pass, which is also
+        actions = np.empty(len(positions), dtype=np.int64)                            # | exactly how a game ends under area scoring once the board is
+        for i, pos in enumerate(positions):                                           # | settled. Sampling rather than taking the best move is what
+            legal = pos.legal_actions(exclude_eyes=True)[:NN]                         # | the reinforcement learning stage requires, since it can only
+            z = np.where(legal, logits[i].astype(np.float64), -np.inf)                # | learn from actions the current policy actually chose; a
+            if not np.isfinite(z).any():                                              # | temperature of zero switches back to the best move for
+                actions[i] = PASS          # only our own eyes remain: pass           # | evaluation games.
                 continue
             if self.temperature <= 0:
                 actions[i] = int(np.argmax(z))
@@ -72,12 +72,12 @@ class BatchPolicy:
         return actions, planes
 
 
-class RandomBatchPolicy:
-    """Uniform over sensible moves, with the same interface."""
-
-    needs_planes = False
-
-    def __init__(self, rng=None, with_colour=False):
+class RandomBatchPolicy:                                                              # +-- THE SAME INTERFACE, WITHOUT A NETWORK --------------------
+    """Uniform over sensible moves, with the same interface."""                       # | Uniform choice among sensible moves, wearing the same shape
+                                                                                      # | so it can be dropped into any slot a network fills. It is
+    needs_planes = False                                                              # | the single random move in the middle of the value-network
+                                                                                      # | generation recipe, and the floor that every other player is
+    def __init__(self, rng=None, with_colour=False):                                  # | measured against.
         self.rng = rng if rng is not None else np.random.default_rng()
         self.fx = feat.FeatureExtractor(with_colour=with_colour)
 
@@ -93,13 +93,13 @@ class RandomBatchPolicy:
         return actions, planes
 
 
-class Game:
-    """One game in flight, plus whatever the caller asked to record."""
-
-    __slots__ = ("pos", "planes", "actions", "movers", "done", "z_black",
-                 "meta")
-
-    def __init__(self):
+class Game:                                                                           # +-- WHAT A GAME IN FLIGHT CARRIES ----------------------------
+    """One game in flight, plus whatever the caller asked to record."""               # | The position, and optionally the record of it: the planes
+                                                                                      # | the policy actually saw, the move it chose, and which colour
+    __slots__ = ("pos", "planes", "actions", "movers", "done", "z_black",             # | chose it. Keeping the planes rather than recomputing them
+                 "meta")                                                              # | later matters because the learning step needs exactly the
+                                                                                      # | input the policy was looking at, and rebuilding it would be
+    def __init__(self):                                                               # | both slower and a chance for the two to disagree.
         self.pos = go.Position()
         self.planes = []
         self.actions = []
@@ -109,8 +109,8 @@ class Game:
         self.meta = {}
 
 
-def run_games(n_games, policy_for, rng=None, max_moves=None, record=False,
-              on_step=None, init_positions=None):
+def run_games(n_games, policy_for, rng=None, max_moves=None, record=False,            # +-- ALL THE GAMES ADVANCE TOGETHER ---------------------------
+              on_step=None, init_positions=None):                                     # | Every game contributes one position, they are grouped by
     """Play ``n_games`` in lockstep.
 
     ``policy_for(colour, game_index, game)`` returns the policy object that
@@ -124,17 +124,17 @@ def run_games(n_games, policy_for, rng=None, max_moves=None, record=False,
 
     Returns the finished ``Game`` objects.
     """
-    rng = rng or np.random.default_rng()
-    max_moves = max_moves or go.MAX_MOVES
-    games = [Game() for _ in range(n_games)]
-    if init_positions is not None:
-        for g, p0 in zip(games, init_positions):
-            g.pos = p0.copy()
-
-    while True:
-        active = [(i, g) for i, g in enumerate(games)
-                  if not g.pos.is_over() and g.pos.move_no < max_moves]
-        if not active:
+    rng = rng or np.random.default_rng()                                              # | which policy is to move, and each distinct network gets
+    max_moves = max_moves or go.MAX_MOVES                                             # | exactly one batched call per step. Grouping by the policy
+    games = [Game() for _ in range(n_games)]                                          # | object rather than by colour is what lets the same loop
+    if init_positions is not None:                                                    # | serve a learner playing its own past self, or a generation
+        for g, p0 in zip(games, init_positions):                                      # | recipe that switches between three different move sources
+            g.pos = p0.copy()                                                         # | partway through each game, without any of them losing the
+                                                                                      # | batching. Games drop out as they finish, so the batch
+    while True:                                                                       # | shrinks over time rather than wasting work on finished
+        active = [(i, g) for i, g in enumerate(games)                                 # | boards. Starting from given positions is what makes it
+                  if not g.pos.is_over() and g.pos.move_no < max_moves]               # | possible to play out thousands of rollouts from a leaf in
+        if not active:                                                                # | bulk, which is what claim C4 needs.
             break
         # Group by policy *object* so that each distinct network gets exactly
         # one batched forward pass per step, however the games happen to be
@@ -157,13 +157,13 @@ def run_games(n_games, policy_for, rng=None, max_moves=None, record=False,
                 g.pos.play(int(a))
         if on_step is not None:
             on_step(games)
-
-    for g in games:
-        g.z_black = 1 if g.pos.winner() == BLACK else -1
-        g.done = True
-    return games
-
-
-def outcomes_for(game, colour):
+                                                                                      # +-- WHOSE WIN IS IT ------------------------------------------
+    for g in games:                                                                   # | Outcomes are stored once, from black's point of view, and
+        g.z_black = 1 if g.pos.winner() == BLACK else -1                              # | flipped on reading for whichever colour is asking. One
+        g.done = True                                                                 # | stored convention and one conversion point is the whole
+    return games                                                                      # | defence against sign errors, which in self-play are
+                                                                                      # | invisible: training on negated rewards produces a policy
+                                                                                      # | that learns to lose, which looks exactly like a policy that
+def outcomes_for(game, colour):                                                       # | fails to learn.
     """z from ``colour``'s perspective: +1 win, -1 loss."""
     return float(game.z_black) if colour == BLACK else -float(game.z_black)
