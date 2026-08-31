@@ -45,12 +45,12 @@ def patch_pat(board, surr, pat, q):                       # | When the colour at
         pw = POW4[7 - k]                                  # | which one ...
 ```
 
-Annotated: `ag/go.py`, `ag/rollout.py`, `ag/mcts.py`, `ag/features.py`,
-`ag/nets.py`.
+Every file in `ag/` carries one: `go.py`, `rollout.py`, `mcts.py`,
+`features.py`, `nets.py`, `selfplay.py`, `arena.py`, `players.py`, `data.py`.
 
 ## Tests
 
-40 tests, and the ones worth knowing about are not the shape checks:
+43 tests, and the ones worth knowing about are not the shape checks:
 
 ```bash
 python tests/test_go.py        # captures, ko and its expiry, suicide-that-captures, area scoring
@@ -58,6 +58,12 @@ python tests/test_features.py  # features(rotate(s)) == rotate(features(s)) for 
 python tests/test_nets.py      # the symmetry ensemble must COMMUTE with the symmetry
 python tests/test_mcts.py      # the value sign chain, for black AND for white
 ```
+
+Plus three regression tests for a bug that killed four workers 35 minutes in:
+the flood fill's visited-array was `int32` while its tag counter was `int64`, so
+past 2³¹ the marker silently truncated and the fill ran off the end of its
+buffer into the heap. Every test passed beforehand — none of them ran long
+enough to reach 2³¹. Full write-up in [REPORT.md](REPORT.md#what-broke).
 
 The recurring theme: every one of those failures produces a program that still
 runs, still returns legal moves, and merely plays *slightly worse* â€” which is
