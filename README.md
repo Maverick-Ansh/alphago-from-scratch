@@ -30,7 +30,7 @@ the fragile part.
 
 ## Reading the code
 
-Four core files carry a **comment rail**: the code on the left, a flowing
+Every source file carries a **comment rail**: the code on the left, a flowing
 plain-English explanation down a `# |` column on the right, explaining *why*
 each piece has to be the way it is rather than restating what the line says.
 
@@ -61,9 +61,9 @@ python tests/test_mcts.py      # the value sign chain, for black AND for white
 
 Plus three regression tests for a bug that killed four workers 35 minutes in:
 the flood fill's visited-array was `int32` while its tag counter was `int64`, so
-past 2³¹ the marker silently truncated and the fill ran off the end of its
-buffer into the heap. Every test passed beforehand — none of them ran long
-enough to reach 2³¹. Full write-up in [REPORT.md](REPORT.md#what-broke).
+past 2^31 the marker silently truncated and the fill ran off the end of its
+buffer into the heap. Every test passed beforehand â€” none of them ran long
+enough to reach 2^31. Full write-up in [REPORT.md](REPORT.md#what-broke).
 
 The recurring theme: every one of those failures produces a program that still
 runs, still returns legal moves, and merely plays *slightly worse* â€” which is
