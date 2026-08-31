@@ -257,10 +257,25 @@ def test_tag_counter_survives_int32_range():
         assert got == small, f"tag {tag} gave {got}, expected {small}"
 
 
-def test_shared_scratch_is_wide_enough():
-    """The module-level scratch must have the same property as the local one."""
-    assert g._SEEN.dtype == np.int64, "seen must match the int64 tag width"
-    assert g._TAGBOX.dtype == np.int64
+def test_every_visited_array_matches_the_tag_width():
+    """Generalisation of the overflow bug: EVERY module that runs a flood fill
+    keeps its own scratch, and any one of them being narrower than the tag it
+    stores reintroduces the same heap corruption somewhere else.
+
+    This checks all of them, not just the one that happened to bite.
+    """
+    from ag.rollout import RolloutPolicy
+    from ag.features import FeatureExtractor
+    rp, fx = RolloutPolicy(), FeatureExtractor()
+    owners = [("go", g._SEEN, g._TAGBOX),
+              ("rollout", rp.seen, rp.tagbox),
+              ("features", fx.seen, fx.tagbox)]
+    for name, seen, tagbox in owners:
+        assert tagbox.dtype == np.int64, f"{name}: tag counter must be int64"
+        assert seen.dtype == tagbox.dtype, (
+            f"{name}: seen is {seen.dtype} but tags are {tagbox.dtype}; "
+            f"stores past 2**31 will truncate and the flood fill will run "
+            f"off the end of its buffer")
 
 
 def test_long_run_does_not_corrupt():
