@@ -151,8 +151,8 @@ def main():
                               "--sims", str(a.tourney_sims),
                               "--games", str(a.tourney_games),
                               "--out", f"{R}/tourney",
-                              "--shard", str(s), "--nshards", "3"],
-              gpu=s % 2) for s in range(3)
+                              "--shard", str(s), "--nshards", "4"],
+              gpu=s % 2) for s in range(4)
     ] + [
         Stage("c4", [S("eval_value_vs_rollouts.py"), "--data", expert,
                      "--value", f"{R}/value_uncorrelated.pt",
