@@ -142,6 +142,52 @@ that long. The thing that caught it was a crash, and the thing that made the
 crash *diagnosable* in one step was that four independent processes died at the
 same elapsed time.
 
+### The quiet one: a step size that kills two networks out of three
+
+The paper trains with α = 0.003 at mini-batch 16. Rescaling linearly to
+mini-batch 256 suggests ≈ 0.048; I used 0.03 to be safe. At that step size,
+**k=32 and k=128 both died and k=64 survived** — same data, same code, same
+schedule, only the width different.
+
+The failure is not divergence, which announces itself. It looks like this:
+
+| step | train loss | test acc | test loss |
+|---|---|---|---|
+| 2,500 | 4.385 | 1.42% | 4.393 |
+| 5,000 | 2.957 | 1.59% | 5.823 |
+| 10,000 | 2.890 | 1.59% | 7.963 |
+| 25,000 | 2.558 | 1.59% | 11.557 |
+
+Training loss falls steadily. That is what makes it dangerous. Three things
+give it away:
+
+* **Test accuracy is frozen at a constant** (1.59%, then 0.95%). A network that
+  is learning does not hold accuracy to four decimal places for 20,000 steps. A
+  network predicting *the same point in every position* does — 1.59% is simply
+  the fraction of held-out positions whose expert move happens to be that point.
+* **Train loss parks at ≈ 2.9**, which is the entropy of the *marginal* move
+  distribution, not ln(81) = 4.394. The network has learned which points are
+  popular on a 9×9 board and nothing else.
+* **Test loss climbs past ln(81)**, so it is worse than answering "uniform".
+
+The mechanism is the architecture's own output layer. The final 1×1 convolution
+is followed by `pos_bias`, 81 free parameters added straight to the logits —
+faithful to the paper's "a different bias for each position". Once every ReLU in
+the trunk dies, the trunk's gradient is *exactly* zero and `pos_bias` is the
+only thing still learning. It fits the marginal, then overfits it. There is no
+batch norm and no residual connection to prevent this, and correctly so: both
+post-date this paper.
+
+Fixed by dropping the step size to 0.01, which is stable at every width, and
+re-running the two dead widths. The collapsed checkpoints were deleted rather
+than plotted — a dead network is a broken run, not a data point about accuracy
+predicting strength.
+
+This one is worth dwelling on because it is the failure mode the C1 measurement
+is *least* able to see: a collapsed network has a perfectly well-defined
+accuracy, it would have taken its place on the accuracy-versus-strength plot,
+and it would have sat near the origin looking like evidence *for* the claim.
+
 ### Found before the sweep, by writing the tests first
 
 1. **PUCT would have confounded the C5 comparison.** The paper writes the
