@@ -51,7 +51,7 @@ def main():
     ap.add_argument("--sl", required=True)
     ap.add_argument("--rl", default=None, help="defaults to --sl")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--games", type=int, default=12000)
+    ap.add_argument("--games", type=int, default=24000)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()

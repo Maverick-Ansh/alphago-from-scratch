@@ -74,6 +74,12 @@ def collect(learner_pol, opp_pol, n_games, rng, learner_black_first=True):
             P.append(planes)
             A.append(a)
             R.append(z)
+    if not P:
+        # Every game ended with the learner making no non-pass move at all.
+        # Possible only if something upstream is broken; say so rather than
+        # dying inside np.stack with an unrelated message.
+        raise RuntimeError("no learner moves collected -- check colour "
+                           "assignment or the pass rule")
     return (np.stack(P), np.array(A, dtype=np.int64),
             np.array(R, dtype=np.float32), wins / n_games, games)
 
