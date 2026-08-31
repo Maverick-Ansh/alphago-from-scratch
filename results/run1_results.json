@@ -1,0 +1,96 @@
+{
+  "run": "run1",
+  "date": "2026-08-31",
+  "board": {"size": 9, "komi": 7.5, "rules": "Tromp-Taylor area, simple ko"},
+  "expert_data": {
+    "games": 320, "positions": 31104, "non_pass": 29926,
+    "teacher": "MCTS, 128 sims, lambda=1, uniform prior",
+    "mean_game_length": 97, "black_win_rate": 0.5238
+  },
+
+  "eval_gate": {
+    "verdict": "PASS", "problems": [],
+    "value_mse_floor": 0.9999987483024597,
+    "mean_z": 0.0011574074160307646,
+    "black_win_rate_teacher_games": 0.5237911522633745,
+    "black_win_rate_random_play": 0.30,
+    "teacher_self_agreement": {
+      "n": 120, "self_agreement": 0.375,
+      "agreement_with_stored_label": 0.4083333333333333,
+      "note": "this is the CEILING on C1 move-prediction accuracy"
+    },
+    "matches": [
+      {"label": "colour balance (random vs random)", "games": 40, "wins": 18, "rate": 0.45,
+       "ci": [0.307, 0.602], "wins_as_black": 5, "wins_as_white": 13, "mean_len": 112.65},
+      {"label": "degenerate: random vs always-pass", "games": 40, "wins": 40, "rate": 1.0,
+       "ci": [0.896, 1.0], "wins_as_black": 20, "wins_as_white": 20, "mean_len": 128.05},
+      {"label": "degenerate: random vs first-point", "games": 40, "wins": 20, "rate": 0.5,
+       "ci": [0.352, 0.648], "wins_as_black": 5, "wins_as_white": 15, "mean_len": 89.63},
+      {"label": "ceiling: teacher vs random", "games": 40, "wins": 40, "rate": 1.0,
+       "ci": [0.896, 1.0], "wins_as_black": 20, "wins_as_white": 20, "mean_len": 90.03},
+      {"label": "p_pi vs random", "games": 40, "wins": 32, "rate": 0.8,
+       "ci": [0.650, 0.898], "wins_as_black": 13, "wins_as_white": 19, "mean_len": 107.63}
+    ]
+  },
+
+  "elo_instrument_preview": {
+    "note": "untrained p_pi, 10 games/pair, anchored on random",
+    "random": [0, 0, 0], "p_pi": [80, -122, 349],
+    "mcts25": [535, 300, 707], "mcts100": [946, 757, 1135]
+  },
+
+  "rollout_policy_p_pi": {
+    "test_accuracy": 0.1831,
+    "paper_reference": "24.2% on 19x19 vs human experts",
+    "w_tac": {"capture_ge1": 0.943, "capture_ge2": 0.032,
+              "save_from_atari": 0.588, "self_atari": 0.097},
+    "w_resp": [0.484, -0.18, 0.024, -0.248, 0.866, -0.183, -0.274, -0.447, -0.042],
+    "w_pat_abs_mean": 0.0482
+  },
+
+  "sl_policy": {
+    "ceiling": 0.375,
+    "note": "k64 ran at lr=0.03 and survived; k32/k128 collapsed at 0.03 and were re-run at lr=0.01",
+    "k32": {"params": 83185, "lr": 0.01, "final_test_acc": 0.2366, "final_top5": 0.4824,
+            "final_test_loss": 2.8472,
+            "curve": [[2500, 0.0142], [5000, 0.0180], [7500, 0.1969], [10000, 0.2149],
+                      [12500, 0.2092], [15000, 0.2220], [17500, 0.2319], [20000, 0.2373],
+                      [22500, 0.2366], [25000, 0.2366]]},
+    "k64": {"params": 258449, "lr": 0.03, "final_test_acc": 0.2488, "final_top5": 0.4871,
+            "final_test_loss": 2.8417,
+            "curve": [[2500, 0.1831], [5000, 0.2356], [7500, 0.2386], [10000, 0.2431],
+                      [12500, 0.2444], [15000, 0.2373], [17500, 0.2376], [20000, 0.2485],
+                      [22500, 0.2390], [25000, 0.2488]]},
+    "k128": {"params": 885457, "lr": 0.01, "final_test_acc": 0.2373, "final_top5": 0.4831,
+             "final_test_loss": 2.8368,
+             "curve": [[2500, 0.0136], [5000, 0.0217], [7500, 0.2105], [10000, 0.2200],
+                       [12500, 0.2190], [15000, 0.2166], [17500, 0.2264], [20000, 0.2447],
+                       [22500, 0.2380], [25000, 0.2373]]}
+  },
+
+  "rl_policy": {
+    "lr": 0.0002, "iters": 200, "games_per_iter": 32, "pool_every": 15,
+    "baseline_sanity_check": 0.46,
+    "note": "sanity check is RL(=SL) vs SL before any update; must be ~0.5",
+    "vs_sl_curve": [[25, 0.77], [50, 0.91], [75, 0.95], [100, 0.94],
+                    [125, 0.96], [150, 0.96], [175, 0.96], [200, 0.98]],
+    "final_vs_sl": 0.98,
+    "paper_reference": "RL policy won more than 80% of games against the SL policy"
+  },
+
+  "value_data": {
+    "games_played": 24000, "positions_kept": 15604, "discard_rate": 0.350,
+    "note": "one position per game; discarded when the game ended before move U"
+  },
+
+  "value_net_ATTEMPT1_FAILED": {
+    "lr": 0.02, "steps": 8000, "n_train_per_arm": 9604,
+    "correlated":   {"train_mse": 1.0000, "test_mse": 1.0000, "gap": -0.0000, "common_mse": 0.9998},
+    "uncorrelated": {"train_mse": 0.9982, "test_mse": 0.9993, "gap": 0.0011, "common_mse": 1.0011},
+    "floor": 0.9998,
+    "VERDICT": "C3 UNTESTABLE, NOT REFUTED",
+    "why": "Both arms sit exactly on the constant-predictor floor, and TRAIN mse is at the floor too, so this is an optimisation failure and not overfitting. The value network never learned anything, so the experiment has no power to compare the two data schemes. Reporting 'no difference between arms' from this would be wrong."
+  },
+
+  "still_to_run": ["value net re-run at a working step size", "C3", "C4", "C5", "C6", "C7"]
+}
