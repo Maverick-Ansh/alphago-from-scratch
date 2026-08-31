@@ -55,21 +55,21 @@ from . import features as feat
 from .go import N, NN
 
 
-class Trunk(nn.Module):
-    """The shared convolutional body: one 5x5 layer then n_layers 3x3 layers."""
-
-    def __init__(self, in_planes, n_filters=64, n_layers=5):
-        super().__init__()
-        layers = [nn.Conv2d(in_planes, n_filters, 5, padding=2), nn.ReLU()]
-        for _ in range(n_layers):
-            layers += [nn.Conv2d(n_filters, n_filters, 3, padding=1), nn.ReLU()]
-        self.body = nn.Sequential(*layers)
-
-    def forward(self, x):
+class Trunk(nn.Module):                                                               # +-- ONE WIDE LAYER, THEN NARROW ONES -------------------------
+    """The shared convolutional body: one 5x5 layer then n_layers 3x3 layers."""      # | A single five-by-five layer followed by three-by-three
+                                                                                      # | layers. The first is wider because it is the only place raw
+    def __init__(self, in_planes, n_filters=64, n_layers=5):                          # | stone positions get combined at all, and a Go shape worth
+        super().__init__()                                                            # | naming is about that size; after that, depth is a cheaper
+        layers = [nn.Conv2d(in_planes, n_filters, 5, padding=2), nn.ReLU()]           # | way to grow the region a unit can see than width is. Every
+        for _ in range(n_layers):                                                     # | layer keeps the board's exact size, so a unit in the last
+            layers += [nn.Conv2d(n_filters, n_filters, 3, padding=1), nn.ReLU()]      # | layer still corresponds to one intersection. The paper
+        self.body = nn.Sequential(*layers)                                            # | writes this as an explicit zero-pad to twenty-three then a
+                                                                                      # | five-by-five, which is the same thing: nothing is ever
+    def forward(self, x):                                                             # | cropped.
         return self.body(x)
 
 
-class PolicyNet(nn.Module):
+class PolicyNet(nn.Module):                                                           # +-- A DISTRIBUTION OVER POINTS, WITH A BIAS PER POINT --------
     """p_sigma / p_rho: a distribution over the N*N points.
 
     There is no "pass" output.  The paper excludes passes from the training set
@@ -77,18 +77,18 @@ class PolicyNet(nn.Module):
     eye-avoidance the right time to pass is exactly when no sensible move
     remains -- a rule, not a prediction.  The player wrapper applies it.
     """
-
-    def __init__(self, in_planes=feat.N_PLANES_POLICY, n_filters=64,
-                 n_layers=5):
-        super().__init__()
-        self.in_planes = in_planes
-        self.n_filters = n_filters
-        self.n_layers = n_layers
-        self.trunk = Trunk(in_planes, n_filters, n_layers)
-        self.head = nn.Conv2d(n_filters, 1, 1, bias=False)
-        # "with a different bias for each position"
-        self.pos_bias = nn.Parameter(torch.zeros(N * N))
-
+                                                                                      # | The trunk is collapsed to one number per intersection by a
+    def __init__(self, in_planes=feat.N_PLANES_POLICY, n_filters=64,                  # | one-by-one convolution, and then a separate learned bias is
+                 n_layers=5):                                                         # | added for every point on the board. That bias is a real
+        super().__init__()                                                            # | architectural choice, not a detail: corners, edges and the
+        self.in_planes = in_planes                                                    # | centre behave differently in Go for reasons that have
+        self.n_filters = n_filters                                                    # | nothing to do with the stones present, and giving the
+        self.n_layers = n_layers                                                      # | network a free parameter per intersection lets it learn that
+        self.trunk = Trunk(in_planes, n_filters, n_layers)                            # | without spending trunk capacity on it. There is no output
+        self.head = nn.Conv2d(n_filters, 1, 1, bias=False)                            # | for passing. The paper drops pass moves from its training
+        # "with a different bias for each position"                                   # | set, and under area scoring the moment to pass is when no
+        self.pos_bias = nn.Parameter(torch.zeros(N * N))                              # | sensible move is left, which is a rule and not something
+                                                                                      # | worth predicting.
     def forward(self, x):
         h = self.trunk(x)
         h = self.head(h).flatten(1)
@@ -99,15 +99,15 @@ class PolicyNet(nn.Module):
                     n_layers=self.n_layers, kind="policy")
 
 
-class ValueNet(nn.Module):
-    """v_theta: a scalar in [-1, 1] for the player to move."""
-
-    def __init__(self, in_planes=feat.N_PLANES_VALUE, n_filters=64,
-                 n_layers=5, n_hidden=256):
-        super().__init__()
-        self.in_planes = in_planes
-        self.n_filters = n_filters
-        self.n_layers = n_layers
+class ValueNet(nn.Module):                                                            # +-- ONE NUMBER FOR THE WHOLE BOARD ---------------------------
+    """v_theta: a scalar in [-1, 1] for the player to move."""                        # | Same trunk, one layer deeper, then the board is collapsed to
+                                                                                      # | a single channel and fed through a fully connected layer.
+    def __init__(self, in_planes=feat.N_PLANES_VALUE, n_filters=64,                   # | The fully connected layer is what makes this different in
+                 n_layers=5, n_hidden=256):                                           # | kind from the policy network: a convolution can only ever
+        super().__init__()                                                            # | report about a neighbourhood, and who is winning is a
+        self.in_planes = in_planes                                                    # | property of the whole board at once. The final tanh bounds
+        self.n_filters = n_filters                                                    # | the output to the range outcomes actually take, so the
+        self.n_layers = n_layers                                                      # | network can never predict a win worth more than a win.
         self.n_hidden = n_hidden
         # "hidden layer 12 is an additional convolution layer" -> one deeper
         # than the policy trunk before the 1x1 collapse.
@@ -128,13 +128,13 @@ class ValueNet(nn.Module):
                     kind="value")
 
 
-def save(net, path, **extra):
-    torch.save({"config": net.config(), "state": net.state_dict(), **extra},
-               path)
-
-
-def load(path, map_location="cpu"):
-    ck = torch.load(path, map_location=map_location, weights_only=False)
+def save(net, path, **extra):                                                         # +-- SAVING THE SHAPE ALONGSIDE THE WEIGHTS -------------------
+    torch.save({"config": net.config(), "state": net.state_dict(), **extra},          # | The architecture is written into the checkpoint, so loading
+               path)                                                                  # | does not depend on the caller remembering how wide the
+                                                                                      # | network was. Anything extra passed in is stored too, which
+                                                                                      # | is how training history and accuracy travel with the weights
+def load(path, map_location="cpu"):                                                   # | and are still there weeks later when the tournament needs to
+    ck = torch.load(path, map_location=map_location, weights_only=False)              # | label a point on a graph.
     cfg = dict(ck["config"])
     kind = cfg.pop("kind")
     net = (PolicyNet if kind == "policy" else ValueNet)(**cfg)
@@ -164,16 +164,16 @@ class NetEvaluator:
       step, so evaluations are memoised on the board bytes.
     """
 
-    def __init__(self, net, device="cpu", with_colour=False,
-                 symmetry="none", cache=True, batch_size=64):
-        self.net = net.to(device).eval()
-        self.device = device
-        self.fx = feat.FeatureExtractor(with_colour=with_colour)
-        self.symmetry = symmetry
-        self.cache = {} if cache else None
-        self.batch_size = batch_size
-        self.n_calls = 0
-        self.n_forward = 0
+    def __init__(self, net, device="cpu", with_colour=False,                          # +-- MAKING A NETWORK LOOK LIKE A PLAIN FUNCTION --------------
+                 symmetry="none", cache=True, batch_size=64):                         # | The search wants to call something that takes a position and
+        self.net = net.to(device).eval()                                              # | returns numbers; this supplies that. The cache is not an
+        self.device = device                                                          # | optimisation detail: the same position is reached over and
+        self.fx = feat.FeatureExtractor(with_colour=with_colour)                      # | over inside one search tree, and a forward pass costs about
+        self.symmetry = symmetry                                                      # | a thousand times what a rollout step does, so answering a
+        self.cache = {} if cache else None                                            # | repeat from memory is the difference between a search that
+        self.batch_size = batch_size                                                  # | finishes and one that does not. Positions are keyed on the
+        self.n_calls = 0                                                              # | stones, the side to move, the ko ban and the last move,
+        self.n_forward = 0                                                            # | which is everything the features are built from.
 
     def _key(self, pos):
         return (pos.board.tobytes(), pos.to_play, pos.ko, pos.last_move)
@@ -188,16 +188,16 @@ class NetEvaluator:
         return self.net(x).float().cpu().numpy()
 
     @torch.no_grad()
-    def __call__(self, pos):
-        self.n_calls += 1
-        if self.cache is not None:
-            k = self._key(pos)
-            hit = self.cache.get(k)
-            if hit is not None:
-                return hit
-        x = self._planes(pos)
-        if self.symmetry == "all":
-            batch = [feat.transform_planes(x, j) for j in range(8)]
+    def __call__(self, pos):                                                          # +-- EVALUATING UNDER A SYMMETRY ------------------------------
+        self.n_calls += 1                                                             # | Three modes. Averaging all eight rotations gives the
+        if self.cache is not None:                                                    # | steadiest answer and costs eight forward passes. Picking one
+            k = self._key(pos)                                                        # | at random costs one, and is what the paper uses inside the
+            hit = self.cache.get(k)                                                   # | search, on the reasoning that the search visits the same
+            if hit is not None:                                                       # | position many times and will average over the random choices
+                return hit                                                            # | by itself. Doing nothing is the cheapest and is used where a
+        x = self._planes(pos)                                                         # | fixed answer is wanted. Whatever is chosen, the network sees
+        if self.symmetry == "all":                                                    # | a rotated board and its answer has to be rotated back, which
+            batch = [feat.transform_planes(x, j) for j in range(8)]                   # | is what the subclasses below do.
             out = self._run(batch)
             out = self._unify(out, list(range(8)))
         elif self.symmetry == "random":
@@ -213,16 +213,16 @@ class NetEvaluator:
         raise NotImplementedError
 
 
-class PolicyEvaluator(NetEvaluator):
-    """pos -> probability vector of length NN+1 (the pass slot stays at 0)."""
-
-    def _unify(self, raw, syms):
-        # Undo each symmetry on the *output plane* before averaging:
-        # "the planes of output probabilities are rotated/reflected back into
-        #  the original orientation, and averaged together".
-        acc = np.zeros(NN, dtype=np.float64)
-        for row, j in zip(raw, syms):
-            p = _softmax(row.astype(np.float64))
+class PolicyEvaluator(NetEvaluator):                                                  # +-- ROTATING THE ANSWER BACK ---------------------------------
+    """pos -> probability vector of length NN+1 (the pass slot stays at 0)."""        # | Probabilities come out indexed by the rotated board and must
+                                                                                      # | be reindexed to the original before they mean anything. The
+    def _unify(self, raw, syms):                                                      # | mapping says where each original point ended up, so the
+        # Undo each symmetry on the *output plane* before averaging:                  # | network's answer for an original point is read from that
+        # "the planes of output probabilities are rotated/reflected back into         # | slot. Reading through the mapping undoes the rotation;
+        #  the original orientation, and averaged together".                          # | assigning into it would apply the rotation a second time.
+        acc = np.zeros(NN, dtype=np.float64)                                          # | Both produce a valid distribution and only one is right,
+        for row, j in zip(raw, syms):                                                 # | which is why this has a test that requires the ensemble to
+            p = _softmax(row.astype(np.float64))                                      # | commute with the symmetry rather than merely to run.
             # fwd[a] = the index that original point a occupies after symmetry
             # j, so the network's output for original point a is p[fwd[a]].
             # Reading p through fwd is the *inverse* map; assigning into it
@@ -235,18 +235,18 @@ class PolicyEvaluator(NetEvaluator):
         return out
 
 
-class ValueEvaluator(NetEvaluator):
+class ValueEvaluator(NetEvaluator):                                                   # +-- A VALUE DOES NOT CARE WHICH WAY UP THE BOARD IS ----------
     """pos -> scalar value for the player to move.
 
     The value is invariant under board symmetry, so the ensemble is a plain
     mean: "For the value network, the output values are simply averaged."
     """
-
-    def _unify(self, raw, syms):
-        return float(np.mean(raw))
-
-
-def _softmax(z):
+                                                                                      # | Rotating a board does not change who is winning, so the
+    def _unify(self, raw, syms):                                                      # | ensemble is a plain average with no reindexing at all. The
+        return float(np.mean(raw))                                                    # | paper says exactly this. The softmax below subtracts the
+                                                                                      # | maximum first, which changes nothing about the result and
+                                                                                      # | keeps the exponential from overflowing on a confident
+def _softmax(z):                                                                      # | network.
     z = z - z.max()
     e = np.exp(z)
     return e / e.sum()
