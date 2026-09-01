@@ -251,6 +251,56 @@ def train_arm(name, arm, lr0, steps, a, Xprobe, Xcommon, zcommon,
     return net, hist
 
 
+def correlation_report(ds, idx):
+    """How much independent information a set of positions actually carries.
+
+    The paper's stated mechanism for the correlated arm is that "successive
+    positions are strongly correlated, differing by just one stone, but the
+    regression target is shared for the entire game".  These are that sentence
+    as numbers: how many distinct outcomes the positions are drawn from, and
+    how often two consecutive positions of one game carry *opposite* labels
+    while differing by a single stone -- which they do whenever the player to
+    move alternates, because z is from the mover's point of view.
+
+    Nearly-identical inputs with opposite targets is the most hostile shape a
+    regression target can take, and the smoothest fit to it is the constant.
+    """
+    idx = np.sort(np.asarray(idx))
+    gid = ds["game_id"][idx]
+    z = z_for_player(ds)[idx]
+    same = gid[1:] == gid[:-1]
+    n_opp = float(np.mean(z[1:][same] != z[:-1][same])) if same.any() else 0.0
+    return dict(n_positions=int(len(idx)), n_games=int(len(np.unique(gid))),
+                positions_per_game=float(len(idx) / max(1, len(np.unique(gid)))),
+                adjacent_opposite_label=n_opp)
+
+
+def capacity_control(name, arm, lr0, a, Xprobe, Xcommon, zcommon, floor_common,
+                     device, n_small=500, steps=1500):
+    """Can this arm be fitted at all, on a subset small enough to memorise?
+
+    A flat arm has two possible causes that the MSE column cannot separate: the
+    optimiser is failing, or the data genuinely carries almost nothing at this
+    scale.  Shrinking the training set to 500 positions removes the second --
+    500 positions are memorisable by this network -- so if it fits there and not
+    at full size, the step size is exonerated and the data is the finding.
+    """
+    small = dict(X=arm["X"], z=arm["z"], train=np.asarray(arm["train"])[:n_small],
+                 test=arm["test"])
+    _, h = train_arm(f"{name}/control", small, lr0, steps, a, Xprobe, Xcommon,
+                     zcommon, floor_common, device, verbose=False)
+    e = h[-1]
+    print(f"[value/control] {name} on {n_small} positions: train MSE "
+          f"{e['train_mse']:.4f}, pred_std {e['pred_std']:.4f} -> "
+          + ("the optimiser can fit this data; a flat full-size arm is about "
+             "the data, not the step size"
+             if e["pred_std"] >= 1e-3 else
+             "even a memorisable subset stays flat, so suspect the optimiser"),
+          flush=True)
+    return dict(n_small=n_small, steps=steps, train_mse=e["train_mse"],
+                pred_std=e["pred_std"])
+
+
 def calibrate_lr(a, arms, Xprobe, Xcommon, zcommon, floor_common, device):
     """Pick the step size on a short trial of both arms, by TRAINING mse.
 
@@ -276,6 +326,8 @@ def calibrate_lr(a, arms, Xprobe, Xcommon, zcommon, floor_common, device):
             [row["arms"][n]["train_mse"] for n in arms]))
         row["min_pred_std"] = float(min(
             row["arms"][n]["pred_std"] for n in arms))
+        row["max_pred_std"] = float(max(
+            row["arms"][n]["pred_std"] for n in arms))
         row["max_dead_units"] = float(max(
             row["arms"][n]["dead_units"] for n in arms))
         table.append(row)
@@ -283,18 +335,30 @@ def calibrate_lr(a, arms, Xprobe, Xcommon, zcommon, floor_common, device):
               f"{row['mean_train_mse']:.4f} | min pred_std "
               f"{row['min_pred_std']:.4f} | max dead units "
               f"{row['max_dead_units']:.0%}"
-              + ("   <- collapsed" if row["min_pred_std"] < 1e-3 else ""),
+              + ("   <- both arms flat" if row["max_pred_std"] < 1e-3
+                 else "   <- one arm flat" if row["min_pred_std"] < 1e-3 else ""),
               flush=True)
 
-    live = [r for r in table if r["min_pred_std"] >= 1e-3]
+    # A step size that flattens EVERY arm is an optimiser failure and the run
+    # should stop.  A step size under which one arm learns and the other does
+    # not is a different thing entirely -- it may be the ablation working --
+    # so it is allowed through, and ``capacity_control`` is what decides which
+    # of the two it is.
+    live = [r for r in table if r["max_pred_std"] >= 1e-3]
     if not live:
         raise SystemExit(
-            "[value] every candidate step size collapsed at least one arm. "
-            "The working window is narrow and bounded on BOTH sides -- too "
-            "small collapses to the constant predictor, too large saturates "
-            "the output tanh -- so widen --lr-candidates in both directions, "
-            "not just downward, before spending the full budget.")
+            "[value] every candidate step size flattened BOTH arms. The "
+            "working window is narrow and bounded on both sides -- too small "
+            "collapses to the constant predictor, too large saturates the "
+            "output tanh -- so widen --lr-candidates in both directions, not "
+            "just downward, before spending the full budget.")
     best = min(live, key=lambda r: r["mean_train_mse"])
+    flat = [n for n in arms if best["arms"][n]["pred_std"] < 1e-3]
+    if flat:
+        print(f"[value] at the chosen step size the {', '.join(flat)} arm(s) "
+              f"stay flat. That is reported, not worked around -- see the "
+              f"capacity control below for whether it is the data or the "
+              f"optimiser.", flush=True)
     print(f"[value] chosen step size {best['lr']} "
           f"(mean train MSE {best['mean_train_mse']:.4f}); "
           f"the same value is used for both arms.", flush=True)
@@ -385,13 +449,28 @@ def main():
 
     Xprobe = np.asarray(Xcommon[:256])
 
-    # The upper bracket: what the score alone already tells you.
+    # The upper bracket: what the score alone already tells you, per arm.
     probe = score_probe(unc, np.sort(unc_train), np.sort(common), zu)
+    probe_cor = score_probe(cor, np.sort(cor_train)[:6000],
+                            np.sort(cor_test)[:3000], zc)
     print(f"[value] ANALYTIC PROBE tanh({probe['a']:.3f}*score{probe['b']:+.2f}) "
           f"scores MSE {probe['test_mse']:.4f} on the common test set "
           f"(sign accuracy {probe['sign_accuracy']:.1%}). The interval that "
           f"matters is [{probe['test_mse']:.2f}, {floor_common:.2f}], not "
           f"[0, {floor_common:.2f}].", flush=True)
+    print(f"[value] the same probe on the CORRELATED arm's own positions: MSE "
+          f"{probe_cor['test_mse']:.4f} (sign accuracy "
+          f"{probe_cor['sign_accuracy']:.1%}) -- whole-game data carries much "
+          f"less per position before any network is involved.", flush=True)
+
+    corr_stats = {n: correlation_report(ds_, idx) for n, ds_, idx in
+                  (("correlated", cor, cor_train),
+                   ("uncorrelated", unc, unc_train))}
+    for n, c in corr_stats.items():
+        print(f"[value] {n:<13} {c['n_positions']} positions from "
+              f"{c['n_games']} games ({c['positions_per_game']:.1f} per game); "
+              f"{c['adjacent_opposite_label']:.1%} of within-game neighbours "
+              f"carry opposite labels", flush=True)
 
     # ---------------- step-size calibration ------------------------------
     # Both arms, short trials, selected on TRAINING mse -- see the module
@@ -434,9 +513,18 @@ def main():
                   f"{hist[-1]['dead_units']:.0%}. This arm learned nothing, so "
                   f"C3 cannot be read off it.", flush=True)
 
+    controls = {}
+    for name, arm in arms.items():
+        if results[name]["collapsed"]:
+            controls[name] = capacity_control(name, arm, lr0, a, Xprobe,
+                                              Xcommon, zcommon, floor_common,
+                                              device)
+
     with open(os.path.join(a.out, "value_results.json"), "w") as f:
         json.dump(dict(args=vars(a), lr_used=lr0, lr_calibration=calib,
-                       score_probe=probe, results=results), f, indent=2)
+                       score_probe=probe, score_probe_correlated=probe_cor,
+                       correlation=corr_stats, capacity_controls=controls,
+                       results=results), f, indent=2)
 
     print("\n=== C3: correlated vs uncorrelated value-net training ===")
     print(f"step size {lr0} for both arms")

@@ -344,6 +344,43 @@ result than the paper's, and a fair reading is that it is *easier* here: the SL
 policy is distilled from a 128-simulation MCTS rather than from human dan play,
 so there is more headroom above it and less to preserve.
 
+### 5.5 One forward pass against a search ladder (C7)
+
+The round robin gives every search player the same 100 simulations, which cannot
+answer a claim about *thousands* of rollouts. So the opponent is swept instead:
+the raw network, one forward pass per move and no tree, against `a_r` (MCTS with
+p_π rollouts, λ=1, uniform prior, no network anywhere) at a ladder of budgets.
+20 paired-colour games per rung.
+
+| opponent `a_r` @ | 50 sims | 100 sims | 300 sims | 1000 sims |
+|---|---|---|---|---|
+| **p_σ** (SL policy, no search) | 10% [2,31] | 10% [2,31] | 0% [0,19] | 0% [0,19] |
+| **p_ρ** (RL policy, no search) | **100%** [81,100] | **100%** [81,100] | **95%** [75,100] | **50%** [30,70] |
+
+Two opposite answers from the same architecture.
+
+**For the SL policy the claim is refuted, and not narrowly** — p_σ loses to
+*fifty* rollouts a move. This is the resize showing its teeth, and it is worth
+stating precisely. The SL policy is distilled from a 128-simulation MCTS, so it
+cannot exceed that teacher; it reaches 79% of the teacher's own self-agreement
+(§5.3) and is still beaten 9 games in 10 by a search running a *third* of the
+teacher's budget. Being most of the way to a teacher's move distribution is not
+the same as being most of the way to its strength — which is C1's premise viewed
+from the other end, and the sharpest number in this report against it.
+
+**For the RL policy the claim is confirmed at full strength.** p_ρ is exactly
+even with 1,000 rollouts a move (10/20, CI [30,70]) and beats 300 rollouts 95%
+of the time. One forward pass is worth on the order of a thousand rollouts.
+
+So policy-gradient self-play moves the same network from "worse than 50
+rollouts" to "worth 1,000" with no change whatsoever in inference cost — a ~20×
+improvement in search-equivalent strength bought entirely by training, and the
+largest single effect measured anywhere in this reproduction.
+
+The paper's α_p row is the **SL** network, so C7 as the paper states it does not
+reproduce here; the claim survives only when re-anchored on p_ρ. Recording that
+as a pass would be reporting the wrong network.
+
 ---
 
 ## 6. Verdict per claim
