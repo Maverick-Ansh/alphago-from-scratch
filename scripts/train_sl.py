@@ -18,7 +18,7 @@ one thing that cannot be resized -- with the step size and halving period
 rescaled to match.
 
 On the step size: naively rescaling the paper's alpha = 0.003 from batch 16 to
-batch 256 gives ~0.048, and the default here is **0.03**, which is close to it.
+batch 256 gives ~0.048, and the default here is **0.05**, which is that number.
 
 An earlier version of this file said the opposite -- that 0.03 collapsed two
 widths out of three and 0.01 was the safe choice.  That was wrong, and the way
@@ -26,10 +26,25 @@ it was wrong is worth keeping.  The two "collapsed" widths were the two that
 lost a race on the shared feature cache (see ``build_feature_cache``) and spent
 the run measuring themselves against blank boards.  The step size was never
 implicated; it was simply the only thing that had been varied deliberately, so
-it took the blame.  Re-run against a sound cache, 0.03 is better than 0.01 at
-every width -- 24.1/24.1/24.9% against 23.0/23.0/23.5% -- and reaches 17% test
-accuracy by step 2,500 where 0.01 is still at chance and stays there until step
-7,500.  0.01 is not safer, it is just slower.
+it took the blame.
+
+Swept properly, on a sound cache, final test accuracy over 25,000 steps:
+
+    alpha     k=32     k=64    k=128
+    0.01    22.95%   22.95%   23.50%
+    0.03    24.11%   24.11%   24.87%
+    0.05    25.16%   24.87%   25.12%     <- the naive rescaling
+    0.15    25.66%   25.68%   24.14%
+    0.30         -   25.44%        -
+    0.60         -    1.52%        -     <- nan, and it says so
+
+Nothing collapses quietly anywhere on that sweep.  0.60 does diverge, and it
+diverges the way divergence actually looks: the training loss goes to ``nan``
+and the test loss to 2.8e14, which no one would mistake for a result.  0.05 is
+chosen over the slightly higher mean at 0.15 because it is the most even across
+widths (a spread of 0.29 points against 1.54), and C1 reads accuracy *across*
+widths -- a step size that quietly penalises the widest network would be
+measuring the schedule instead of the claim.
 
 The lesson is not about step sizes.  A wrong number that looks like a plausible
 training curve will be explained by whatever knob was last turned, and the
@@ -259,7 +274,7 @@ def main():
     ap.add_argument("--layers", type=int, default=5)
     ap.add_argument("--steps", type=int, default=40000)
     ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--lr", type=float, default=0.03)
+    ap.add_argument("--lr", type=float, default=0.05)
     ap.add_argument("--halve-every", type=int, default=12000)
     ap.add_argument("--eval-every", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=0)
