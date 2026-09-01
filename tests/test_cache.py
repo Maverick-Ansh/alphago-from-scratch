@@ -17,6 +17,7 @@ place, and the rows are verifiable because ``P_ONES`` is a constant plane that
 no valid row can be missing.
 """
 
+import gc
 import os
 import subprocess
 import sys
@@ -51,6 +52,18 @@ def _tiny_dataset(n_games=4, n_moves=6):
     return recs
 
 
+def _tmpdir():
+    """A temp dir that survives a memmap still being open on Windows.
+
+    ``build_feature_cache`` hands back a read-only memmap, which keeps a handle
+    on the file.  POSIX unlinks it happily; Windows refuses with WinError 32 and
+    the cleanup raises straight through the test.  Releasing the reference is
+    the honest fix, but subprocess-held handles in the race test can outlive the
+    assertion, so cleanup errors are tolerated too.
+    """
+    return tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+
+
 def _load_tiny(tmpdir):
     path = os.path.join(tmpdir, "tiny.npz")
     data.save(path, _tiny_dataset())
@@ -58,22 +71,26 @@ def _load_tiny(tmpdir):
 
 
 def test_check_cache_accepts_a_complete_cache():
-    with tempfile.TemporaryDirectory() as d:
+    with _tmpdir() as d:
         ds = _load_tiny(d)
         arr = build_feature_cache(ds, os.path.join(d, "f.npy"))
         assert check_cache(arr), "a freshly built cache must validate"
         assert np.asarray(arr[:, F.P_ONES]).all()
+        del arr, ds
+        gc.collect()
 
 
 def test_check_cache_rejects_unwritten_rows():
     """The exact shape of the bug: right dtype, right shape, blank tail."""
-    with tempfile.TemporaryDirectory() as d:
+    with _tmpdir() as d:
         ds = _load_tiny(d)
         p = os.path.join(d, "f.npy")
         arr = np.asarray(build_feature_cache(ds, p)).copy()
         arr[-3:] = 0                       # the last rows are the held-out set
         assert not check_cache(arr), \
             "an all-zero row is an unwritten row and must be rejected"
+        del ds
+        gc.collect()
 
 
 def test_no_partial_cache_is_ever_visible():
@@ -83,7 +100,7 @@ def test_no_partial_cache_is_ever_visible():
     returned an array of the right shape whose tail was zeros, and every number
     computed from it looked like a plausible training result.
     """
-    with tempfile.TemporaryDirectory() as d:
+    with _tmpdir() as d:
         ds = _load_tiny(d)
         data.save(os.path.join(d, "tiny.npz"), _tiny_dataset())
         prog = (

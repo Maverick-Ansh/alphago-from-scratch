@@ -629,35 +629,55 @@ to "worth 1,000" at unchanged inference cost.
 ```bash
 pip install -r requirements.txt
 python tests/test_go.py && python tests/test_features.py \
-  && python tests/test_nets.py && python tests/test_mcts.py
+  && python tests/test_nets.py && python tests/test_mcts.py \
+  && python tests/test_cache.py                              # 46 tests
 ```
 
 Everything in one command, dependency-ordered across two GPUs and resumable
 (each stage skips if its outputs already exist):
 
 ```bash
-python scripts/gen_expert.py --games 120 --sims 128 --seed 2000 \
-       --out data/expert_0.npz          # x4, one per core, ~20 min
-python scripts/run_pipeline.py --data data --runs runs   # ~60 min
+python scripts/gen_expert.py --games 160 --sims 128 --seed 2000 \
+       --out data/expert_0.npz          # x4, one per core, ~23 min
+python scripts/run_pipeline.py --data data --runs runs \
+       --value-games 36000                                  # ~2 h
 ```
 
 Stage order inside the driver: `train_rollout` + `train_sl`×3 → **`check_eval`
 (the gate)** → `train_rl` → `gen_value_data` → `train_value` → `tournament` /
-`eval_value_vs_rollouts` / `eval_c1_strength` → `make_figures`.
+`eval_value_vs_rollouts` → `eval_c7_search_free`×2 → `eval_c1_strength` →
+`make_figures`.
 
 Then watch it play:
 
 ```bash
-python scripts/demo.py --runs runs --black a_rvp --white a_r
+python scripts/demo.py --runs runs --black rvp_rl --white a_r
 ```
 
 ### Reproducing the numbers above
 
-The two step sizes that matter are **not** the naive rescalings:
+Wall clock for run 2 on 2×T4 + 4 vCPU: ~23 min of expert data, then ~2 h.
 
-* SL: `--lr 0.01`. 0.03 collapses two widths out of three (§4).
+**The step sizes are the part worth copying, and neither is what run 1 said.**
+
+* **SL: `--lr 0.05`** — the naive batch-16→256 rescaling of the paper's 0.003,
+  and it is right. The claim in run 1 that 0.03 collapsed two widths was a bug
+  in the measurement, not a property of the step size (§4). Swept cleanly,
+  nothing collapses below 0.3, and 0.6 diverges loudly.
+* **Value: ~0.2**, an order of magnitude *above* the policy net, with a narrow
+  window — 0.05 collapses to the constant predictor and 0.5 saturates the output
+  tanh. `train_value.py` calibrates it rather than assuming it, selecting on
+  training MSE so the tuning cannot decide C3's train/test gap.
 * Everything is seeded; `--seed` is threaded through every stage.
 
-Figures are regenerated from the result JSONs alone (`make_figures.py --runs`),
-so the JSONs in `runs/` are the durable record — no checkpoint is needed to
-redraw a plot.
+**Two numbers make the value results readable**, and both are printed next to
+every MSE: the constant-predictor floor (1.000) below, and the analytic score
+probe — `tanh(a·score + b)` on the Tromp-Taylor count, no network at all
+(0.795) — above. The interval that matters is [0.795, 1.000], not [0, 1.000].
+
+Figures are regenerated from the result JSONs alone, so the JSONs are the
+durable record and no checkpoint is needed to redraw a plot:
+
+```bash
+python scripts/make_figures.py --runs results/run2 --out figures
+```
