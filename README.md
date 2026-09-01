@@ -50,24 +50,32 @@ Every file in `ag/` carries one: `go.py`, `rollout.py`, `mcts.py`,
 
 ## Tests
 
-43 tests, and the ones worth knowing about are not the shape checks:
+46 tests, and the ones worth knowing about are not the shape checks:
 
 ```bash
 python tests/test_go.py        # captures, ko and its expiry, suicide-that-captures, area scoring
 python tests/test_features.py  # features(rotate(s)) == rotate(features(s)) for all 8 symmetries
 python tests/test_nets.py      # the symmetry ensemble must COMMUTE with the symmetry
 python tests/test_mcts.py      # the value sign chain, for black AND for white
+python tests/test_cache.py     # three processes racing on one feature cache
 ```
 
-Plus three regression tests for a bug that killed four workers 35 minutes in:
-the flood fill's visited-array was `int32` while its tag counter was `int64`, so
-past 2^31 the marker silently truncated and the fill ran off the end of its
-buffer into the heap. Every test passed beforehand — none of them ran long
-enough to reach 2^31. Full write-up in [REPORT.md](REPORT.md#what-broke).
+Each of those last two files exists because of a bug that shipped:
+
+* the flood fill's visited-array was `int32` while its tag counter was `int64`,
+  so past 2³¹ the marker silently truncated and the fill ran off the end of its
+  buffer into the heap — killing four workers 35 minutes in. Every test passed
+  beforehand; none ran long enough to reach 2³¹.
+* the shared feature cache was readable while half-written, so two of three
+  policy networks spent an entire run measuring their accuracy against blank
+  boards. They reported 1.4%. Their weights were fine. That one was written up
+  as a step-size collapse first, and the write-up was wrong — see
+  [REPORT.md](REPORT.md#what-broke).
 
 The recurring theme: every one of those failures produces a program that still
-runs, still returns legal moves, and merely plays *slightly worse* — which is
-indistinguishable from "the network is weak" and would otherwise never be found.
+runs, still returns legal moves, and merely plays *slightly worse* — or reports
+a number that looks like a plausible result. Which is indistinguishable from
+"the network is weak", and would otherwise never be found.
 
 ## Running it
 
@@ -89,8 +97,9 @@ train_rl.py          REINFORCE self-play against a pool of past selves   [C2]
 gen_value_data.py    one position per game, three-phase generation
 train_value.py       the value network, both data schemes               [C3]
    ↓
-tournament.py                 round robin over the ablation rows    [C5 C6 C7]
+tournament.py                 round robin over the ablation rows       [C5 C6]
 eval_value_vs_rollouts.py     Fig 2b                                     [C4]
+eval_c7_search_free.py        one forward pass against a search ladder    [C7]
 eval_c1_strength.py           Fig 2a                                     [C1]
 make_figures.py
 ```
