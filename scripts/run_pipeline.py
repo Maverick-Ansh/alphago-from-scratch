@@ -125,9 +125,11 @@ def main():
 
     # -- 3. RL, then the value-network data it is needed for --------------
     phases["rl"] = [
+        # The completion marker is the history file, which is written once at
+        # the end -- not the checkpoint, which is rewritten as training goes.
         Stage("rl", [S("train_rl.py"), "--sl", f"{R}/sl_k64_final.pt",
                      "--out", R, "--iters", str(a.rl_iters)],
-              gpu=0, produces=[f"{R}/rl_final.pt"]),
+              gpu=0, produces=[f"{R}/rl_history.json"]),
     ]
     phases["valuedata"] = [
         Stage("value_data", [S("gen_value_data.py"), "--sl",

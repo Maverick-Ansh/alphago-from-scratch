@@ -175,9 +175,16 @@ def main():
             hist.append(dict(iter=it, loss=float(loss.item()),
                              selfplay_winrate=winrate, vs_sl=wr,
                              pool=len(pool), seconds=el))
-            nets.save(net, os.path.join(a.out, f"{a.tag}_final.pt"),
-                      history=hist, args=vars(a))
+            # Periodic saves go to _latest, never to _final.  A file called
+            # "final" that appears at iteration 25 is a trap: the pipeline
+            # treats it as this stage's output and skips the stage on resume,
+            # and anything downstream that loads it gets a policy that is
+            # partly trained without any indication that it is.
+            nets.save(net, os.path.join(a.out, f"{a.tag}_latest.pt"),
+                      history=hist, args=vars(a), complete=False)
 
+    nets.save(net, os.path.join(a.out, f"{a.tag}_final.pt"),
+              history=hist, args=vars(a), complete=True)
     with open(os.path.join(a.out, f"{a.tag}_history.json"), "w") as f:
         json.dump(dict(tag=a.tag, args=vars(a), baseline_check=base_rate,
                        history=hist), f, indent=2)
