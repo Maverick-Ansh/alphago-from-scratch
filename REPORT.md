@@ -95,8 +95,16 @@ the second RL pass with the value network as baseline; and anything about
 
 ## 4. What broke
 
-*(Filled in as the run proceeds — this section records evaluation and
-implementation faults found, with the numbers before and after the fix.)*
+Four faults, and the ordering below is roughly by how much they cost. Only the
+first announced itself. The other three all produced a program that kept
+running, kept returning legal moves, and reported a number that looked like a
+result — which is the failure mode a reproduction has to be built to catch,
+because nothing else will.
+
+One of them was written up in this section with the wrong cause, and that
+write-up stood for a day. It is left in place, corrected, rather than quietly
+replaced: how a plausible wrong explanation got accepted is the more useful half
+of the story.
 
 ### The expensive one: a 32-bit counter holding a 64-bit tag
 

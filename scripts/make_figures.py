@@ -91,15 +91,29 @@ def fig_c3(runs, out):
     _style(axes[0], "a  value-net MSE (C3)", "SGD step", "MSE")
     axes[0].legend(fontsize=7, frameon=False)
 
+    # Both gaps, because reporting only one of them misleads in one direction
+    # or the other.  At each arm's BEST checkpoint the correlated arm looks
+    # better -- its best is early, before memorisation starts.  By the end of
+    # the same budget it has memorised 576 outcomes and its gap is three times
+    # the other's.  The pair is the result; either bar alone is not.
     names = list(d)
-    gaps = [d[n]["best_gap"] for n in names]
-    axes[1].bar(names, gaps, color=[PALETTE[0], PALETTE[1]], width=0.5)
+    best = [d[n]["best_gap"] for n in names]
+    final = [d[n]["history"][-1]["test_mse"] - d[n]["history"][-1]["train_mse"]
+             for n in names]
+    x = np.arange(len(names))
+    for off, vals, lab, alpha in ((-0.19, best, "at best test MSE", 0.45),
+                                  (0.19, final, "at end of training", 1.0)):
+        axes[1].bar(x + off, vals, width=0.34, label=lab, alpha=alpha,
+                    color=[PALETTE[0], PALETTE[1]])
+        for i, v in enumerate(vals):
+            axes[1].annotate(f"{v:+.3f}", (x[i] + off, v), ha="center",
+                             va="bottom", fontsize=7.5)
     axes[1].axhline(0, color="#333", linewidth=0.8)
-    for i, gname in enumerate(names):
-        axes[1].annotate(f"{gaps[i]:+.3f}", (i, gaps[i]),
-                         ha="center", va="bottom", fontsize=8)
-    _style(axes[1], "b  test - train gap (lower = less memorised)",
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(names)
+    _style(axes[1], "b  test - train gap (higher = more memorised)",
            "training-data scheme", "MSE gap")
+    axes[1].legend(fontsize=7, frameon=False)
     fig.tight_layout()
     fig.savefig(os.path.join(out, "fig_c3_value_overfit.png"), dpi=160)
     print("[fig] wrote fig_c3_value_overfit.png")
