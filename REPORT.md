@@ -379,6 +379,8 @@ p_π rollouts, λ=1, uniform prior, no network anywhere) at a ladder of budgets.
 | **p_σ** (SL policy, no search) | 10% [2,31] | 10% [2,31] | 0% [0,19] | 0% [0,19] |
 | **p_ρ** (RL policy, no search) | **100%** [81,100] | **100%** [81,100] | **95%** [75,100] | **50%** [30,70] |
 
+![C7: one forward pass against a search ladder](figures/fig_c7_search_free.png)
+
 Two opposite answers from the same architecture.
 
 **For the SL policy the claim is refuted, and not narrowly** — p_σ loses to
@@ -430,6 +432,8 @@ Trained to 20,000 steps, both arms:
 | 16,000 | 0.148 | 1.236 | | 0.451 | 0.714 |
 | 20,000 | **0.099** | **1.279** | | 0.360 | 0.756 |
 
+![C3: value-net MSE and the train/test gap](figures/fig_c3_value_overfit.png)
+
 **Confirmed, and more starkly than the paper.** The correlated arm memorises —
 training MSE falls to 0.099, which for 576 distinct outcomes is exactly what
 memorising 576 numbers looks like — while its test MSE climbs to **1.279, worse
@@ -472,6 +476,8 @@ The paper's Fig. 2b has the value network *below* every rollout curve. Here it
 is **above all four — including uniform random rollouts.** C4 does not
 reproduce.
 
+![C4: evaluation accuracy by stage of game](figures/fig_c4_value_vs_rollouts.png)
+
 The mechanism is visible in the per-stage breakdown, and it is the board size:
 
 | move number | 0–15 | 15–30 | 30–45 | 45–60 | 60–80 | 80–200 |
@@ -511,6 +517,8 @@ search player. Random anchored at 0.
 | `p_sl` | SL policy, no search | 128 | [−55, 342] |
 | `a_vp` | p_σ prior, v_θ, λ=0 | 92 | [−94, 281] |
 | `random` | — | 0 | — |
+
+![Elo of the component ablations](figures/fig_c5_elo.png)
 
 **C5 (λ=0.5 beats λ=0 and λ=1): half confirmed, half refuted.**
 
@@ -576,6 +584,8 @@ y-axis. Attempt 2 fixed the reference and the checkpoint spread but not the
 sample size. Only attempt 3 has a win-rate spread larger than its own error
 bars, which is the precondition for the question being answerable at all. The
 stage now computes that comparison and prints `NOT RESOLVABLE` when it fails.
+
+![C1: accuracy against strength](figures/fig_c1_accuracy_strength.png)
 
 **The answer, on the resolvable measurement: no relationship. C1 is refuted.**
 
