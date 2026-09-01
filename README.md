@@ -129,8 +129,31 @@ eval_c1_strength.py           Fig 2a                                     [C1]
 make_figures.py
 ```
 
+One command, dependency-ordered across two GPUs and resumable — every stage
+skips if its outputs already exist:
+
+```bash
+python scripts/gen_expert.py --games 160 --sims 128 --seed 2000 \
+       --out data/expert_0.npz             # ×4, one per core, ~23 min
+python scripts/run_pipeline.py --data data --runs runs --value-games 36000
+```
+
+~2 hours on 2×T4 after the data. Then watch it play, with the search's
+reasoning printed:
+
+```bash
+python scripts/demo.py --runs runs --black rvp_rl --white a_r
+```
+
 Board size and komi come from the environment (`AG_BOARD_SIZE`, `AG_KOMI`), so
 the whole pipeline re-runs at 7×7 without editing anything.
+
+The figures above and in the report are regenerated from the result JSONs
+alone — no checkpoint required:
+
+```bash
+python scripts/make_figures.py --runs results/run2 --out figures
+```
 
 ## What this is not
 
