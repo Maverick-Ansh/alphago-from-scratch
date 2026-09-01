@@ -3,7 +3,8 @@
 Fig 2a  playing strength against move-prediction accuracy (claim C1)
 Fig 2b  evaluation MSE by stage of game, value net vs rollouts (claim C4)
 Fig 4b  Elo of the component ablations (claim C5)
-plus    the C3 train/test gap for the two value-net data schemes
+plus    the C3 train/test gap for the two value-net data schemes, and the C7
+        search ladder the raw policy network is measured against
 """
 
 import argparse
@@ -156,6 +157,43 @@ def fig_c5(runs, out):
     print("[fig] wrote fig_c5_elo.png")
 
 
+def fig_c7(runs, out):
+    """How much search the raw policy network is worth (C7).
+
+    The x axis is the opponent's simulation budget on a log scale, because the
+    interesting quantity is the order of magnitude at which one forward pass
+    stops being competitive, not the exact rung.
+    """
+    path = os.path.join(runs, "c7_search_free.json")
+    if not os.path.exists(path):
+        print("[fig] no c7 json, skipping C7")
+        return
+    d = json.load(open(path))
+    rows = d["rows"]
+    nets_ = sorted({r["net"] for r in rows})
+    fig, ax = plt.subplots(figsize=(5.6, 3.8))
+    for i, n in enumerate(nets_):
+        mine = sorted([r for r in rows if r["net"] == n], key=lambda r: r["sims"])
+        x = [r["sims"] for r in mine]
+        y = [100 * r["rate"] for r in mine]
+        err = [[100 * (r["rate"] - r["ci"][0]) for r in mine],
+               [100 * (r["ci"][1] - r["rate"]) for r in mine]]
+        ax.errorbar(x, y, yerr=err, marker="o", markersize=5, capsize=3,
+                    color=PALETTE[i % len(PALETTE)], linewidth=1.4, label=n)
+    ax.axhline(50, color="#999", linestyle="--", linewidth=1)
+    ax.annotate("even", (ax.get_xlim()[0], 50), textcoords="offset points",
+                xytext=(4, 4), fontsize=7, color="#777")
+    ax.set_xscale("log")
+    ax.set_ylim(0, 100)
+    _style(ax, "One forward pass against a search ladder (C7)",
+           "opponent simulations per move (a_r, log scale)",
+           "raw network win rate (%)")
+    ax.legend(fontsize=8, frameon=False)
+    fig.tight_layout()
+    fig.savefig(os.path.join(out, "fig_c7_search_free.png"), dpi=160)
+    print("[fig] wrote fig_c7_search_free.png")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", default="/content/runs")
@@ -166,6 +204,7 @@ def main():
     fig_c3(a.runs, a.out)
     fig_c4(a.runs, a.out)
     fig_c5(a.runs, a.out)
+    fig_c7(a.runs, a.out)
 
 
 if __name__ == "__main__":
