@@ -142,51 +142,94 @@ that long. The thing that caught it was a crash, and the thing that made the
 crash *diagnosable* in one step was that four independent processes died at the
 same elapsed time.
 
-### The quiet one: a step size that kills two networks out of three
+### The quiet one: two networks measured against blank boards
 
-The paper trains with α = 0.003 at mini-batch 16. Rescaling linearly to
-mini-batch 256 suggests ≈ 0.048; I used 0.03 to be safe. At that step size,
-**k=32 and k=128 both died and k=64 survived** — same data, same code, same
-schedule, only the width different.
+**This section previously blamed the step size. That diagnosis was wrong, and
+replacing it is more instructive than the original story was.**
 
-The failure is not divergence, which announces itself. It looks like this:
+The symptom, seen twice. Three SL widths train at once; two of them report a
+test accuracy of about 1.4%, frozen to four decimal places for twenty thousand
+steps, with the test loss climbing past ln(81) while the training loss behaves
+normally. One width is unaffected. In run 1 the survivor was k=64; in run 2, at
+a *different* step size, the survivor was k=128 and k=64 was one of the
+casualties.
 
-| step | train loss | test acc | test loss |
-|---|---|---|---|
-| 2,500 | 4.385 | 1.42% | 4.393 |
-| 5,000 | 2.957 | 1.59% | 5.823 |
-| 10,000 | 2.890 | 1.59% | 7.963 |
-| 25,000 | 2.558 | 1.59% | 11.557 |
+| step | train loss | test acc | test loss | dead trunk units |
+|---|---|---|---|---|
+| 2,500 | 4.394 | 1.30% | 4.394 | 56% |
+| 7,500 | 3.010 | 1.42% | 5.054 | 35% |
+| 15,000 | 2.846 | 1.42% | 8.330 | 34% |
+| 25,000 | 2.873 | 1.52% | 10.458 | 34% |
 
-Training loss falls steadily. That is what makes it dangerous. Three things
-give it away:
+The first explanation on offer was a dead-rectifier collapse driven by too large
+a step size, and it fit well enough to be believed: the training loss parks near
+2.9, which is the entropy of the marginal move distribution; the test loss runs
+away as if only the 81 per-position output biases were still learning; and the
+step size was the one thing that had been deliberately changed. Run 1 lowered it
+from 0.03 to 0.01, re-ran the two dead widths, got healthy numbers, and wrote it
+up.
 
-* **Test accuracy is frozen at a constant** (1.59%, then 0.95%). A network that
-  is learning does not hold accuracy to four decimal places for 20,000 steps. A
-  network predicting *the same point in every position* does — 1.59% is simply
-  the fraction of held-out positions whose expert move happens to be that point.
-* **Train loss parks at ≈ 2.9**, which is the entropy of the *marginal* move
-  distribution, not ln(81) = 4.394. The network has learned which points are
-  popular on a 9×9 board and nothing else.
-* **Test loss climbs past ln(81)**, so it is worse than answering "uniform".
+**The check that broke the story.** Run 2 collapsed at the *lowered* step size,
+and took k=64 with it — the width run 1 had reported as the survivor. Loading
+the three finished checkpoints and scoring them against a freshly built feature
+cache gave 22.65%, 22.85% and 23.20% test accuracy. The weights were fine. All
+three networks had trained correctly the whole time. **Only the measurement was
+broken**, which is why lowering the step size in run 1 appeared to fix it: the
+re-run was sequential, and a sequential run does not race.
 
-The mechanism is the architecture's own output layer. The final 1×1 convolution
-is followed by `pos_bias`, 81 free parameters added straight to the logits —
-faithful to the paper's "a different bias for each position". Once every ReLU in
-the trunk dies, the trunk's gradient is *exactly* zero and `pos_bias` is the
-only thing still learning. It fits the marginal, then overfits it. There is no
-batch norm and no residual connection to prevent this, and correctly so: both
-post-date this paper.
+The cause is one line in `build_feature_cache`. `np.lib.format.open_memmap`
+creates the cache at its **full final size, zero filled**, and then fills it row
+by row over several seconds. Any process starting inside that window found a
+file of exactly the right shape and dtype, took the `reusing` branch, and read
+zeros.
 
-Fixed by dropping the step size to 0.01, which is stable at every width, and
-re-running the two dead widths. The collapsed checkpoints were deleted rather
-than plotted — a dead network is a broken run, not a data point about accuracy
-predicting strength.
+Training tolerated that, which is what hid it. The training set is re-read from
+the memmap every step, so it becomes real the moment the build finishes — hence
+the loss sitting at exactly ln(81) for the first 5,000 steps and then dropping.
+The held-out set does not recover: `Xte = np.asarray(X[te])` copies it into RAM
+once, at startup. And `te` is the last 10% of games, which is the *last* region
+of the file to be written. The two losers of the race spent the entire run
+computing accuracy against empty boards.
 
-This one is worth dwelling on because it is the failure mode the C1 measurement
-is *least* able to see: a collapsed network has a perfectly well-defined
-accuracy, it would have taken its place on the accuracy-versus-strength plot,
-and it would have sat near the origin looking like evidence *for* the claim.
+Every part of the "collapse" then follows. Accuracy is frozen because the
+evaluation input never changes. It is ~1.4% because on an empty board the
+network answers the same way every time. The test loss climbs because the
+network grows more confident as it learns — on positions it is not being shown.
+
+**Fixes.** The cache is built into a temporary file under a lock and renamed
+into place, so a reader can only ever see all of it or none of it; and it is
+verified through `P_ONES`, a constant plane of ones that no valid row can be
+missing, so an unwritten row is detectable exactly rather than by eye.
+`train_sl.py` now refuses to start if its held-out slice is blank. Three
+regression tests in `tests/test_cache.py`, one of which races three processes
+on one cache path.
+
+**What the step size actually does**, re-measured on a sound cache, all three
+widths, 25,000 steps, nothing else changed:
+
+| | k=32 | k=64 | k=128 | at step 2,500 |
+|---|---|---|---|---|
+| α = 0.01 | 22.95% | 22.95% | 23.50% | still at chance |
+| **α = 0.03** | **24.11%** | **24.11%** | **24.87%** | **≈17%** |
+
+No collapse at either. 0.03 is better at every width and reaches in 2,500 steps
+what 0.01 has not reached by 7,500 — 0.01 is not safer, it is slower. So the
+naive batch-16 → batch-256 rescaling of the paper's α = 0.003 (≈0.048) was
+approximately right all along, and the default is now 0.03. The lowering that
+"fixed" run 1 fixed nothing and cost a point of accuracy.
+
+Two things are worth taking from this. The first is that **a wrong number which
+looks like a plausible training curve will be attributed to whichever knob was
+last turned**, and the attribution will be persuasive, self-consistent, and
+publishable. The second is what actually broke it open: not a better theory of
+step sizes, but re-running the identical configuration and watching a *different*
+width survive. A mechanism that cannot predict which of three networks dies is
+not the mechanism.
+
+This is also the failure mode the C1 measurement is least able to see. A network
+measured against blank boards has a perfectly well-defined accuracy near zero,
+and it would have taken its place on the accuracy-versus-strength plot, near the
+origin, looking like evidence *for* the claim.
 
 ### Found before the sweep, by writing the tests first
 
