@@ -62,7 +62,7 @@ one, so positions spread out while targets stay clean.
 |---|---|---|---|
 | Board | 19×19 | 9×9 | Same rules, same scoring, same tactics (ladders, ko, life-and-death). Every claim is relative. |
 | Komi | 7.5, Chinese rules | 7.5, Chinese rules (Tromp-Taylor) | Unchanged. Measured to be near-fair at 9×9 — see §4. |
-| Expert | 29.4M positions, 160k human games | MCTS teacher, 128 sims, 1,400 games | See above. Structure preserved, absolute level lowered. |
+| Expert | 29.4M positions, 160k human games | MCTS teacher, 128 sims, **640 games** (61,817 positions) | See above. Structure preserved, absolute level lowered. |
 | Ko rule | not stated | **simple ko** (no positional superko) | Standard in fast Go engines; superko cycles are additionally bounded by a move cap. |
 | Policy trunk | 1×(5×5) + 11×(3×3), k=192 | 1×(5×5) + 5×(3×3), k∈{32,64,128} | Receptive field 15 already spans a 9×9 board; 27 would be wasted. Width is the axis C1 varies. |
 | Feature planes | 48 (49 for value) | **46 (47)** — the two *ladder* planes are absent | On 9×9 a ladder resolves against the edge within ~4 moves, and its first move is already visible through *capture size*, *self-atari size* and *liberties after move*, all implemented exactly. |
@@ -209,16 +209,28 @@ on one cache path.
 **What the step size actually does**, re-measured on a sound cache, all three
 widths, 25,000 steps, nothing else changed:
 
-| | k=32 | k=64 | k=128 | at step 2,500 |
+| α | k=32 | k=64 | k=128 | |
 |---|---|---|---|---|
-| α = 0.01 | 22.95% | 22.95% | 23.50% | still at chance |
-| **α = 0.03** | **24.11%** | **24.11%** | **24.87%** | **≈17%** |
+| 0.01 | 22.95% | 22.95% | 23.50% | still at chance at step 2,500 |
+| 0.03 | 24.11% | 24.11% | 24.87% | |
+| **0.05** | **25.16%** | **24.87%** | **25.12%** | **the naive rescaling** |
+| 0.15 | 25.66% | 25.68% | 24.14% | best mean, worst spread |
+| 0.30 | — | 25.44% | — | |
+| 0.60 | — | 1.52% | — | `nan`, test loss 2.8×10¹⁴ |
 
-No collapse at either. 0.03 is better at every width and reaches in 2,500 steps
-what 0.01 has not reached by 7,500 — 0.01 is not safer, it is slower. So the
-naive batch-16 → batch-256 rescaling of the paper's α = 0.003 (≈0.048) was
-approximately right all along, and the default is now 0.03. The lowering that
-"fixed" run 1 fixed nothing and cost a point of accuracy.
+**Nothing collapses quietly anywhere on that sweep.** 0.60 does diverge, and it
+diverges the way divergence actually looks — the training loss goes to `nan` and
+the test loss to 2.8×10¹⁴, which nobody would mistake for a result. That is the
+contrast worth holding onto: a real optimisation failure is loud, and the quiet
+one was never an optimisation failure at all.
+
+So the naive batch-16 → batch-256 rescaling of the paper's α = 0.003 (≈0.048)
+was right all along. The default is **0.05**, chosen over the marginally higher
+mean at 0.15 because it is far more even across widths (0.29 points of spread
+against 1.54) and C1 reads accuracy *across* widths — a step size that quietly
+penalises the widest network would be measuring the schedule instead of the
+claim. Run 1's lowering to 0.01 fixed nothing and cost two points of accuracy on
+every network downstream of it.
 
 Two things are worth taking from this. The first is that **a wrong number which
 looks like a plausible training curve will be attributed to whichever knob was
