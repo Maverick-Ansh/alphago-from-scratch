@@ -129,6 +129,26 @@ def split_by_game(ds, test_frac=0.1, seed=0):
     return np.flatnonzero(~is_test), np.flatnonzero(is_test)
 
 
+def dead_units(net, Xprobe, device):
+    """Fraction of trunk filters that fire for no position in a probe batch.
+
+    The step-size collapse in section 4 of REPORT.md was diagnosed after the
+    fact, from a test accuracy frozen to four decimal places and a training
+    loss parked at the marginal-move entropy.  Both are indirect.  This is the
+    direct measurement: when every rectifier in the trunk is dead the trunk
+    gradient is exactly zero and the only parameters still moving are the 81
+    per-position output biases, which is a well-defined accuracy that means
+    nothing.  One line in the log is cheaper than a second diagnosis.
+    """
+    net.eval()
+    with torch.no_grad():
+        xb = torch.from_numpy(np.asarray(Xprobe)).to(device).float()
+        h = net.trunk(xb)
+        frac = (h <= 0).all(dim=0).float().mean().item()
+    net.train()
+    return frac
+
+
 def evaluate(net, X, y, device, batch=1024, sym=True):
     """Test accuracy, and top-5, over the held-out games."""
     net.eval()
@@ -228,13 +248,20 @@ def main():
 
         if step % a.eval_every == 0 or step == a.steps:
             acc, t5, tl = evaluate(net, Xte, yte, device)
+            dead = dead_units(net, Xte[:256], device)
             el = time.time() - t0
             print(f"[{tag}] step {step:6d}/{a.steps} lr {lr:.5f} "
                   f"train_loss {loss.item():.4f} | test acc {acc:.4f} "
-                  f"top5 {t5:.4f} loss {tl:.4f} | {el:.0f}s", flush=True)
+                  f"top5 {t5:.4f} loss {tl:.4f} | dead {dead:.0%} "
+                  f"| {el:.0f}s", flush=True)
+            if dead > 0.99:
+                print(f"[{tag}] COLLAPSED at step {step}: every trunk unit is "
+                      f"dead, so only the per-position biases are still "
+                      f"training. Lower --lr; this run's accuracy is not a "
+                      f"point on the C1 curve.", flush=True)
             hist.append(dict(step=step, lr=lr, train_loss=float(loss.item()),
                              test_acc=acc, test_top5=t5, test_loss=tl,
-                             seconds=el))
+                             dead_units=dead, seconds=el))
             nets.save(net, os.path.join(a.out, f"{tag}_step{step}.pt"),
                       history=hist, args=vars(a), n_params=n_par)
 
