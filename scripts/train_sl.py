@@ -18,15 +18,22 @@ one thing that cannot be resized -- with the step size and halving period
 rescaled to match.
 
 On the step size: naively rescaling the paper's alpha = 0.003 from batch 16 to
-batch 256 gives ~0.048, and 0.03 **collapses two widths out of three**.  The
-failure is not divergence, which would be obvious; it is quiet.  Every ReLU in
-the trunk dies, the trunk's gradient becomes exactly zero, and the only
-parameters still learning are the 81 free per-position biases on the output.
-The network then predicts the same point in every position: training loss
-settles at the entropy of the marginal move distribution (~2.9), test accuracy
-freezes at whatever fraction of positions happen to share that point, and test
-loss climbs past ln(81) as the biases overfit.  It looks like a network that is
-training.  The default here is 0.01, which is stable at every width tested.
+batch 256 gives ~0.048, and the default here is **0.03**, which is close to it.
+
+An earlier version of this file said the opposite -- that 0.03 collapsed two
+widths out of three and 0.01 was the safe choice.  That was wrong, and the way
+it was wrong is worth keeping.  The two "collapsed" widths were the two that
+lost a race on the shared feature cache (see ``build_feature_cache``) and spent
+the run measuring themselves against blank boards.  The step size was never
+implicated; it was simply the only thing that had been varied deliberately, so
+it took the blame.  Re-run against a sound cache, 0.03 is better than 0.01 at
+every width -- 24.1/24.1/24.9% against 23.0/23.0/23.5% -- and reaches 17% test
+accuracy by step 2,500 where 0.01 is still at chance and stays there until step
+7,500.  0.01 is not safer, it is just slower.
+
+The lesson is not about step sizes.  A wrong number that looks like a plausible
+training curve will be explained by whatever knob was last turned, and the
+explanation will be persuasive.
 
 The split is **by game, not by position**.  Positions within a game differ by
 one stone and share an outcome; splitting by position would put near-duplicates
@@ -252,7 +259,7 @@ def main():
     ap.add_argument("--layers", type=int, default=5)
     ap.add_argument("--steps", type=int, default=40000)
     ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--lr", type=float, default=0.01)
+    ap.add_argument("--lr", type=float, default=0.03)
     ap.add_argument("--halve-every", type=int, default=12000)
     ap.add_argument("--eval-every", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=0)
