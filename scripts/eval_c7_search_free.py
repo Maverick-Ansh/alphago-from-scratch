@@ -66,6 +66,26 @@ def crossover(rows):
                 lost_every_rung=len(beat) == 0)
 
 
+def report(rows, summary, ladder):
+    print("\n=== C7: the raw policy network against a search ladder ===")
+    print(f"{'net':<7}{'sims':>7}{'win rate':>11}{'  95% CI':>18}")
+    for net_name in sorted(summary):
+        for r in sorted([x for x in rows if x["net"] == net_name],
+                        key=lambda x: x["sims"]):
+            print(f"{net_name:<7}{r['sims']:>7}{r['rate']:>10.1%}   "
+                  f"[{r['ci'][0]:>5.0%},{r['ci'][1]:>5.0%}]")
+        s = summary[net_name]
+        if s["beat_every_rung"]:
+            print(f"  -> {net_name} beat every rung up to {max(ladder)} sims")
+        elif s["lost_every_rung"]:
+            print(f"  -> {net_name} lost to every rung, from {min(ladder)} "
+                  f"sims up")
+        else:
+            print(f"  -> {net_name} is worth between {s['last_beaten']} and "
+                  f"{s['first_lost_to']} rollouts a move")
+    print("paper: alpha_p 1517 Elo, above Fuego (1148) and GnuGo (431)")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rollout", default="/content/runs/rollout.npz")
@@ -73,20 +93,46 @@ def main():
     ap.add_argument("--rl", default="/content/runs/rl_final.pt")
     ap.add_argument("--ladder", default="50,100,300,1000")
     ap.add_argument("--games", type=int, default=20)
+    ap.add_argument("--nets", default="p_sl,p_rl",
+                    help="which networks to put on the ladder; one per "
+                         "process is how the two run side by side")
+    ap.add_argument("--merge", default=None,
+                    help="comma-separated result files to combine into --out")
     ap.add_argument("--out", default="/content/runs/c7_search_free.json")
     ap.add_argument("--device", default=None)
     a = ap.parse_args()
 
     device = a.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    rp = RolloutPolicy.load(a.rollout)
     ladder = [int(x) for x in a.ladder.split(",")]
+    want = a.nets.split(",")
 
+    # The 1000-simulation rungs dominate the wall clock and the machine is idle
+    # by the time this phase runs, so the two networks are climbed by separate
+    # processes and their rows joined here -- the same shard/merge split the
+    # tournament uses.
+    if a.merge:
+        rows = []
+        for f in a.merge.split(","):
+            if os.path.exists(f):
+                rows += json.load(open(f))["rows"]
+        summary = {n: crossover(sorted([r for r in rows if r["net"] == n],
+                                       key=lambda r: r["sims"]))
+                   for n in sorted({r["net"] for r in rows})}
+        with open(a.out, "w") as f:
+            json.dump(dict(args=vars(a), rows=rows, summary=summary), f,
+                      indent=2)
+        report(rows, summary, ladder)
+        print(f"\nwrote {a.out}")
+        return
+
+    rp = RolloutPolicy.load(a.rollout)
     nets_to_test = []
     sl_net, sl_meta = nets.load(a.sl, map_location=device)
-    nets_to_test.append(("p_sl", PolicyNetPlayer(
-        nets.PolicyEvaluator(sl_net, device=device, symmetry="random"),
-        name="p_sl", temperature=0.0)))
-    if a.rl and os.path.exists(a.rl):
+    if "p_sl" in want:
+        nets_to_test.append(("p_sl", PolicyNetPlayer(
+            nets.PolicyEvaluator(sl_net, device=device, symmetry="random"),
+            name="p_sl", temperature=0.0)))
+    if "p_rl" in want and a.rl and os.path.exists(a.rl):
         rl_net, _ = nets.load(a.rl, map_location=device)
         nets_to_test.append(("p_rl", PolicyNetPlayer(
             nets.PolicyEvaluator(rl_net, device=device, symmetry="random"),
@@ -129,23 +175,7 @@ def main():
         json.dump(dict(args=vars(a), rows=rows, summary=summary,
                        sl_test_acc=(sl_meta.get("history") or [{}])[-1]
                        .get("test_acc")), f, indent=2)
-
-    print("\n=== C7: the raw policy network against a search ladder ===")
-    print(f"{'net':<7}{'sims':>7}{'win rate':>11}{'  95% CI':>18}")
-    for net_name, _ in nets_to_test:
-        for r in sorted([x for x in rows if x["net"] == net_name],
-                        key=lambda x: x["sims"]):
-            print(f"{net_name:<7}{r['sims']:>7}{r['rate']:>10.1%}   "
-                  f"[{r['ci'][0]:>5.0%},{r['ci'][1]:>5.0%}]")
-        s = summary[net_name]
-        if s["beat_every_rung"]:
-            print(f"  -> {net_name} beat every rung up to {max(ladder)} sims")
-        elif s["lost_every_rung"]:
-            print(f"  -> {net_name} lost to every rung, from {min(ladder)} sims up")
-        else:
-            print(f"  -> {net_name} is worth between {s['last_beaten']} and "
-                  f"{s['first_lost_to']} rollouts a move")
-    print("paper: alpha_p 1517 Elo, above Fuego (1148) and GnuGo (431)")
+    report(rows, summary, ladder)
 
 
 if __name__ == "__main__":

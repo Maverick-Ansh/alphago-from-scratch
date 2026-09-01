@@ -164,12 +164,23 @@ def main():
                      "--out", f"{R}/c4_value_vs_rollouts.json"],
               gpu=1, produces=[f"{R}/c4_value_vs_rollouts.json"]),
     ]
+    # The 1000-simulation rungs dominate this phase and nothing else is running
+    # by now, so the two networks climb the ladder side by side and are merged.
     phases["c7"] = [
-        Stage("c7", [S("eval_c7_search_free.py"), "--rollout", f"{R}/rollout.npz",
-                     "--sl", f"{R}/sl_k64_final.pt", "--rl", f"{R}/rl_final.pt",
-                     "--ladder", a.c7_ladder, "--games", str(a.c7_games),
-                     "--out", f"{R}/c7_search_free.json"],
-              gpu=1, produces=[f"{R}/c7_search_free.json"]),
+        Stage(f"c7_{n}", [S("eval_c7_search_free.py"),
+                          "--rollout", f"{R}/rollout.npz",
+                          "--sl", f"{R}/sl_k64_final.pt",
+                          "--rl", f"{R}/rl_final.pt", "--nets", n,
+                          "--ladder", a.c7_ladder, "--games", str(a.c7_games),
+                          "--out", f"{R}/c7_{n}.json"],
+              gpu=i, produces=[f"{R}/c7_{n}.json"])
+        for i, n in enumerate(("p_sl", "p_rl"))
+    ]
+    phases["c7merge"] = [
+        Stage("c7_merge", [S("eval_c7_search_free.py"), "--merge",
+                           f"{R}/c7_p_sl.json,{R}/c7_p_rl.json",
+                           "--ladder", a.c7_ladder,
+                           "--out", f"{R}/c7_search_free.json"]),
     ]
     phases["c1"] = [
         Stage("c1", [S("eval_c1_strength.py"), "--runs", R,
@@ -185,7 +196,7 @@ def main():
     ]
 
     order = ["distil", "gate", "rl", "valuedata", "value", "measure", "c7",
-             "c1", "figures"]
+             "c7merge", "c1", "figures"]
     if a.only:
         order = [p for p in order if p in a.only.split(",")]
 
