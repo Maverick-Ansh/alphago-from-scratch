@@ -20,7 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ag import go, nets
 from ag.go import N, NN, PASS, BLACK, WHITE
 from ag.mcts import MCTS
-from ag.players import MCTSPlayer, PolicyNetPlayer, RandomPlayer
+from ag.players import (MCTSPlayer, PolicyNetPlayer, RandomPlayer,
+                        RolloutPolicyPlayer)
 from ag.rollout import RolloutPolicy
 
 COLS = "ABCDEFGHJKLMNOPQRST"
@@ -52,6 +53,8 @@ def make(kind, rp, sl_eval, val_eval, rl_eval, sims, seed):
     rng = np.random.default_rng(seed)
     if kind == "random":
         return RandomPlayer(rng)
+    if kind == "p_pi":
+        return RolloutPolicyPlayer(rp)
     if kind == "p_sl":
         return PolicyNetPlayer(sl_eval, name="p_sl", temperature=0.0)
     if kind == "p_rl":
@@ -67,7 +70,20 @@ def make(kind, rp, sl_eval, val_eval, rl_eval, sims, seed):
     if kind == "a_rvp":
         return MCTSPlayer(name="a_rvp", n_sims=sims, lmbda=0.5, rollout=rp,
                           value_fn=val_eval, prior_fn=sl_eval, rng=rng)
-    raise SystemExit(f"unknown player {kind}")
+    if kind == "a_v":
+        return MCTSPlayer(name="a_v", n_sims=sims, lmbda=0.0,
+                          value_fn=val_eval, rng=rng)
+    # The strongest player measured here (1524 Elo): the full program with the
+    # RL policy as its prior instead of the SL policy.  It was missing, which
+    # meant the demo could not show the thing the tournament says is best.
+    if kind == "rvp_rl":
+        if rl_eval is None:
+            raise SystemExit("rvp_rl needs rl_final.pt")
+        return MCTSPlayer(name="rvp_rl", n_sims=sims, lmbda=0.5, rollout=rp,
+                          value_fn=val_eval, prior_fn=rl_eval, rng=rng)
+    raise SystemExit(
+        f"unknown player {kind!r}. choices: random p_pi p_sl p_rl "
+        f"a_r a_rp a_vp a_v a_rvp rvp_rl")
 
 
 def main():
