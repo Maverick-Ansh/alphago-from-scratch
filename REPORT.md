@@ -7,8 +7,10 @@ Everything is built from nothing: the Go rules engine, the feature planes, the
 policy and value networks, the fast rollout policy, REINFORCE self-play, and
 APV-MCTS with PUCT. No Go library, no RL library.
 
-> **Status:** results pending — the run is in progress. Sections 1, 2 and 3 are
-> final; 4–6 are filled in as the sweep completes.
+> **Status: complete.** All seven claims measured end to end on 2×T4 — two
+> confirmed, four refuted, one split (§6). Run 1's numbers are superseded
+> throughout: two of its three policy networks were measured against blank
+> boards, and the step-size conclusion it drew from that was wrong (§4).
 
 ---
 
@@ -536,11 +538,89 @@ follows the prior and reproduces it. Every arm that leans on the value network
 (`a_r`, `a_rp`) is not. The whole table is one story: **at 9×9 the value network
 is the weak component**, and C4, C5 and this row are three views of it.
 
+### 5.9 Does accuracy buy strength? (C1)
+
+The headline claim, and the one that took three attempts to *measure* rather
+than to answer.
+
+| attempt | reference | points | games | accuracy range | win-rate range | mean half-CI | verdict |
+|---|---|---|---|---|---|---|---|
+| 1 | MCTS-30 | 9 | 30 | 1.2 pts | 27 pts | **15 pts** | unusable |
+| 2 | p_π | 15 | 50 | 5.4 pts | 16 pts | **13 pts** | unusable |
+| **3** | **p_π** | **30** | **400** | **5.4 pts** | **21 pts** | **5 pts** | **resolvable** |
+
+Attempt 1 sampled checkpoints from the middle of training onward, where accuracy
+has already saturated, and played them against a reference that beat all of
+them — 1.2 points of x-range and every point pinned near the floor of the
+y-axis. Attempt 2 fixed the reference and the checkpoint spread but not the
+sample size. Only attempt 3 has a win-rate spread larger than its own error
+bars, which is the precondition for the question being answerable at all. The
+stage now computes that comparison and prints `NOT RESOLVABLE` when it fails.
+
+**The answer, on the resolvable measurement: no relationship. C1 is refuted.**
+
+Spearman(accuracy, win rate) = **−0.04** over 30 checkpoints × 400 games. Within
+every width, accuracy rises over training and strength does not move:
+
+| | accuracy at step 2,500 → 25,000 | win rate at step 2,500 → 25,000 |
+|---|---|---|
+| k=32 | 20.8% → 25.2% | 50.5% → 45.5% |
+| k=64 | 20.2% → 24.9% | 53.8% → 45.5% |
+| k=128 | 20.5% → 25.1% | 51.5% → 51.5% |
+
+A checkpoint that agrees with the teacher 20% of the time plays the fixed
+reference exactly as well as one that agrees 25% of the time. The paper's Fig.
+2a spans 50%→57% accuracy and 25%→70% win rate; the last 5 points of accuracy
+available here buy nothing.
+
+Two honest caveats, in opposite directions. The accuracy range is small — 5.4
+points against the paper's 7, but at a much lower absolute level (20–25% against
+50–57%) and against a ceiling of 31.7%. And this reproduction cannot reach the
+part of the curve the paper is describing: to get past 26% here would need more
+expert data, not more training, since all three widths saturate together (§5.3).
+So the correct statement is narrow and it is what was measured: **over the
+accuracy range this setup can produce, accuracy does not predict strength.**
+
+That reading is corroborated from a completely different direction by §5.5. The
+SL policy at 79% of its teacher's self-agreement still loses to 50 rollouts a
+move. Agreement with this teacher and strength are close to unrelated quantities
+here — which is precisely the link C1 asserts.
+
 ---
 
 ## 6. Verdict per claim
 
-*(pending — filled in when the tournament completes)*
+| # | Claim | Verdict | The number |
+|---|---|---|---|
+| **C1** | Move-prediction accuracy translates into playing strength | **Refuted** | Spearman **−0.04** (30 checkpoints × 400 games; win-rate spread 21 pts vs 5-pt half-CI, so the axes do have range). Accuracy 20.2%→25.6% buys nothing |
+| **C2** | Policy-gradient self-play against a pool beats the SL policy | **Confirmed** | RL beats SL **100/100** games (paper: >80%); passes 80% by iteration 50. Pre-update sanity check 0.52 |
+| **C3** | Whole-game value data overfits; one position per game does not | **Confirmed, more starkly** | Correlated: train MSE →**0.099**, test →**1.279** (worse than the 1.000 floor). Uncorrelated: **0.624** test, never crosses the floor. Final gaps **+1.18 vs +0.40** (paper: +0.18 vs +0.008) |
+| **C4** | One value-net pass beats 100 rollouts | **Refuted** | Value net **0.799**; every rollout estimator beats it, including *uniform random* (0.654). Past move 60 rollouts are near-exact (0.02 by move 80) because a 9×9 game ends in ~100 moves |
+| **C5** | λ=0.5 beats λ=0 and λ=1 | **Half confirmed** | λ=0.5 beats λ=0 **12/12**; loses to λ=1 **4/12**. Elo 671 / 92 / 894. Downstream of C4 — mixing in a worse estimator makes the blend worse |
+| **C6** | The SL policy is a better MCTS prior than the stronger RL policy | **Refuted** | RL is the stronger player (**12/12**, = C2) *and* the better prior (MCTS[SL] loses **0/12** to MCTS[RL]; 671 vs 1524 Elo). Both halves must hold; the second fails completely |
+| **C7** | The raw policy net plays at the level of thousands of rollouts | **Refuted for p_σ, confirmed for p_ρ** | p_σ loses to **50** rollouts (10%). p_ρ is **even with 1,000** (10/20) and beats 300 at 95% |
+
+**Four refuted, two confirmed, one split — and the reproduction is the more
+informative for it.** Three of the four failures are traceable to one cause with
+a name: at 9×9 a game ends in about a hundred moves, so a rollout is nearly an
+exact evaluation and the value network — the component AlphaGo introduced to
+*replace* noisy rollouts — has nothing to improve on. C4 is that fact measured
+directly, C5 is it propagating into the search, and the `a_vp` row of §5.8 is it
+again. The paper's value network is answering a question that a small board does
+not ask.
+
+The other two failures are about the teacher, not the board. C1 and the p_σ half
+of C7 both say the same thing: a policy distilled to 79% of a 128-simulation
+MCTS's self-agreement is not thereby a strong player, and squeezing more
+agreement out of it does not make it one. Whether that survives at 19×19 against
+160,000 human games is exactly the thing this resize cannot test — and saying so
+is the point of having written the claims down first.
+
+What *does* survive the resize is everything about **learning from self-play**.
+C2 is confirmed more strongly than the paper states it, C3 is confirmed far more
+strongly, and the single largest measured effect in the whole reproduction is
+policy-gradient self-play taking one forward pass from "worse than 50 rollouts"
+to "worth 1,000" at unchanged inference cost.
 
 ---
 

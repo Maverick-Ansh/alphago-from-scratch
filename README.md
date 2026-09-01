@@ -16,6 +16,31 @@ Everything is built here. No Go library, no RL library, no MCTS library:
 | `ag/selfplay.py` | batched self-play, so a network sees one large forward pass per move rather than thousands of tiny ones |
 | `ag/arena.py` | paired-colour matches, Agresti–Coull intervals, logistic Elo with bootstrap CIs |
 
+## Result
+
+Seven claims, written down before the code. **Two confirmed, four refuted, one
+split** — full numbers and reasoning in [REPORT.md](REPORT.md).
+
+| | claim | verdict |
+|---|---|---|
+| C1 | accuracy → strength | refuted (Spearman −0.04, axes verified to have range) |
+| C2 | RL self-play beats SL | **confirmed** (100/100; paper says >80%) |
+| C3 | whole-game value data overfits | **confirmed, more starkly than the paper** |
+| C4 | value net beats 100 rollouts | refuted (it loses to *uniform random* rollouts) |
+| C5 | λ=0.5 beats λ=0 and λ=1 | half — beats λ=0, loses to λ=1 |
+| C6 | SL is a better prior than RL | refuted (RL is better at both) |
+| C7 | raw net ≈ thousands of rollouts | refuted for p_σ, **confirmed for p_ρ** |
+
+Three of the four refutations trace to one fact: a 9×9 game ends in ~100 moves,
+so a rollout is nearly an exact evaluation, and the value network — the thing
+AlphaGo introduced to replace noisy rollouts — has nothing left to improve on.
+That is the resize talking, not the paper. What survives it is everything about
+learning from self-play, and the largest single effect measured anywhere here is
+policy-gradient RL taking one forward pass from "loses to 50 rollouts" to "even
+with 1,000" at unchanged inference cost.
+
+![Elo of the component ablations](figures/fig_c5_elo.png)
+
 ## The point
 
 Not "get a strong 9×9 bot". The point is to state the paper's claims so they
