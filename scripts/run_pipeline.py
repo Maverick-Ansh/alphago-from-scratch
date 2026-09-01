@@ -83,6 +83,8 @@ def main():
     ap.add_argument("--value-steps", type=int, default=8000)
     ap.add_argument("--tourney-sims", type=int, default=100)
     ap.add_argument("--tourney-games", type=int, default=12)
+    ap.add_argument("--c7-ladder", default="50,100,300,1000")
+    ap.add_argument("--c7-games", type=int, default=20)
     ap.add_argument("--skip-gate", action="store_true")
     ap.add_argument("--only", default=None, help="comma-separated phase names")
     a = ap.parse_args()
@@ -162,6 +164,13 @@ def main():
                      "--out", f"{R}/c4_value_vs_rollouts.json"],
               gpu=1, produces=[f"{R}/c4_value_vs_rollouts.json"]),
     ]
+    phases["c7"] = [
+        Stage("c7", [S("eval_c7_search_free.py"), "--rollout", f"{R}/rollout.npz",
+                     "--sl", f"{R}/sl_k64_final.pt", "--rl", f"{R}/rl_final.pt",
+                     "--ladder", a.c7_ladder, "--games", str(a.c7_games),
+                     "--out", f"{R}/c7_search_free.json"],
+              gpu=1, produces=[f"{R}/c7_search_free.json"]),
+    ]
     phases["c1"] = [
         Stage("c1", [S("eval_c1_strength.py"), "--runs", R,
                      "--rollout", f"{R}/rollout.npz", "--games", "30",
@@ -175,8 +184,8 @@ def main():
                           "--out", os.path.join(ROOT, "figures")]),
     ]
 
-    order = ["distil", "gate", "rl", "valuedata", "value", "measure", "c1",
-             "figures"]
+    order = ["distil", "gate", "rl", "valuedata", "value", "measure", "c7",
+             "c1", "figures"]
     if a.only:
         order = [p for p in order if p in a.only.split(",")]
 

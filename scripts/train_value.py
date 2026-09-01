@@ -33,6 +33,34 @@ Three things are reported for every arm:
   actually a real signal; an MSE of 0.37 sounds bad and is most of the way to
   perfect.  Reporting one without the other is how value-function results get
   misread.
+
+The step size, and why it is calibrated rather than chosen
+----------------------------------------------------------
+Run 1 trained both arms at ``--lr 0.02`` and both landed on the floor -- *train*
+MSE 1.0000 against a floor of 0.9998.  A train MSE at the floor is not
+overfitting, it is a network that never fitted anything: the trunk's rectifiers
+die, the trunk gradient goes to exactly zero, and the only parameters still
+learning are the two fully connected biases, which converge on E[z].  The arms
+then agree perfectly, and reading "no difference between the arms" off that
+would have been reporting an optimiser failure as an ablation result.  The same
+step size killed two of three widths in the SL stage (REPORT.md section 4).
+
+So the step size is now measured instead of assumed, in two parts.
+
+``calibrate_lr`` runs a short trial of **both** arms at each candidate step size
+and keeps the one with the lowest **training** MSE.  Selecting on train MSE
+matters: C3 is a claim about the train/test *gap*, and picking the step size by
+test MSE, or on one arm only, would let the tuning decide the thing being
+measured.  Optimisation quality is what a step size is responsible for, so that
+is what it is selected on, and the winner is then used for both arms.
+
+``collapse_report`` makes the failure visible while it happens rather than
+inferrable afterwards.  It reports the fraction of dead rectifiers in the trunk
+and the spread of the network's own predictions on a fixed probe batch.  A
+network sitting at the floor because it collapsed has ``pred_std`` near zero and
+a large dead fraction; one sitting near the floor because Go is hard has a
+prediction spread and live units.  The two are indistinguishable from the MSE
+column alone, which is exactly why run 1 needed a separate diagnosis.
 """
 
 import argparse
@@ -66,6 +94,29 @@ def const_floor(z):
     return float(np.mean((z - z.mean()) ** 2))
 
 
+def collapse_report(net, Xprobe, device):
+    """Dead-rectifier fraction in the trunk, and the spread of the outputs.
+
+    A value network parked on the constant-predictor floor has two possible
+    causes with opposite meanings.  Either it learned that positions are hard
+    to call -- in which case it still says different things about different
+    positions -- or its trunk is dead and it is emitting one number for every
+    board.  ``pred_std`` separates them, and ``dead`` says why.
+    """
+    net.eval()
+    with torch.no_grad():
+        xb = torch.from_numpy(Xprobe).to(device).float()
+        h = net.trunk(xb)
+        dead_unit = (h <= 0).all(dim=0).float().mean().item()   # never fires
+        dead_act = (h <= 0).float().mean().item()               # zero right now
+        v = net(xb)
+        pred_std = v.std().item()
+        pred_mean = v.mean().item()
+    net.train()
+    return dict(dead_units=dead_unit, dead_acts=dead_act,
+                pred_std=pred_std, pred_mean=pred_mean)
+
+
 def mse_on(net, X, z, device, batch=2048):
     net.eval()
     tot = 0.0
@@ -78,6 +129,116 @@ def mse_on(net, X, z, device, batch=2048):
     return tot / len(z)
 
 
+def train_arm(name, arm, lr0, steps, a, Xprobe, Xcommon, zcommon,
+              floor_common, device, verbose=True, tag=""):
+    """Train one arm at one step size.  Returns the net and its history.
+
+    Everything except the data is identical between the arms -- same seed, same
+    initialisation, same batch schedule, same step size -- because the one
+    thing C3 varies is where the positions came from.
+    """
+    X, z = arm["X"], arm["z"]
+    tr, te = np.sort(arm["train"]), np.sort(arm["test"])
+    Xtr, ztr = np.asarray(X[tr]), z[tr]
+    Xte, zte = np.asarray(X[te]), z[te]
+    floor_tr, floor_te = const_floor(ztr), const_floor(zte)
+
+    torch.manual_seed(a.seed)
+    net = nets.ValueNet(in_planes=feat.N_PLANES_VALUE,
+                        n_filters=a.filters, n_layers=a.layers).to(device)
+    opt = torch.optim.SGD(net.parameters(), lr=lr0, momentum=0.0)
+    scaler = torch.amp.GradScaler("cuda", enabled=(device == "cuda"))
+    r = np.random.default_rng(a.seed)
+    hist = []
+    t0 = time.time()
+    if verbose:
+        print(f"\n[value/{name}{tag}] lr {lr0} on {len(tr)} positions; "
+              f"floors: train {floor_tr:.4f} test {floor_te:.4f}", flush=True)
+
+    eval_every = max(1, min(a.eval_every, steps // 4))
+    for step in range(1, steps + 1):
+        lr = lr0 * (0.5 ** ((step - 1) // a.halve_every))
+        for gp in opt.param_groups:
+            gp["lr"] = lr
+        idx = np.sort(r.choice(len(tr), size=min(a.batch, len(tr)),
+                               replace=False))
+        xb = torch.from_numpy(Xtr[idx]).to(device).float()
+        zb = torch.from_numpy(ztr[idx]).to(device)
+        k = int(r.integers(8))
+        if k:
+            xb = apply_sym(xb, k)              # value is symmetry-invariant
+        with torch.autocast("cuda", dtype=torch.float16,
+                            enabled=(device == "cuda")):
+            loss = Fn.mse_loss(net(xb).float(), zb)
+        opt.zero_grad(set_to_none=True)
+        scaler.scale(loss).backward()
+        scaler.step(opt)
+        scaler.update()
+
+        if step % eval_every == 0 or step == steps:
+            m_tr = mse_on(net, Xtr, ztr, device)
+            m_te = mse_on(net, Xte, zte, device)
+            m_co = mse_on(net, Xcommon, zcommon, device)
+            d = collapse_report(net, Xprobe, device)
+            if verbose:
+                print(f"[value/{name}{tag}] step {step:5d} lr {lr:.5f} | "
+                      f"train MSE {m_tr:.4f} test MSE {m_te:.4f} "
+                      f"gap {m_te - m_tr:+.4f} | common {m_co:.4f} "
+                      f"(floor {floor_common:.4f}) | dead {d['dead_units']:.0%} "
+                      f"pred_std {d['pred_std']:.3f} | {time.time()-t0:.0f}s",
+                      flush=True)
+            hist.append(dict(step=step, train_mse=m_tr, test_mse=m_te,
+                             common_mse=m_co, lr=lr, **d))
+    return net, hist
+
+
+def calibrate_lr(a, arms, Xprobe, Xcommon, zcommon, floor_common, device):
+    """Pick the step size on a short trial of both arms, by TRAINING mse.
+
+    Run 1 assumed 0.02 and got two dead networks that agreed with each other
+    perfectly -- an optimiser failure wearing the costume of a null result.
+    The candidates are trialled here instead, and the selection criterion is
+    deliberately the training error: fitting the training set is what a step
+    size is responsible for, and it says nothing about the train/test gap that
+    C3 is about.  One winner is used for both arms, so the arms still differ
+    by exactly one thing.
+    """
+    cands = [float(x) for x in a.lr_candidates.split(",")]
+    print(f"\n[value] calibrating the step size over {cands}, "
+          f"{a.calib_steps} steps per arm", flush=True)
+    table = []
+    for lr in cands:
+        row = dict(lr=lr, arms={})
+        for name, arm in arms.items():
+            _, h = train_arm(name, arm, lr, a.calib_steps, a, Xprobe, Xcommon,
+                             zcommon, floor_common, device, verbose=False)
+            row["arms"][name] = h[-1]
+        row["mean_train_mse"] = float(np.mean(
+            [row["arms"][n]["train_mse"] for n in arms]))
+        row["min_pred_std"] = float(min(
+            row["arms"][n]["pred_std"] for n in arms))
+        row["max_dead_units"] = float(max(
+            row["arms"][n]["dead_units"] for n in arms))
+        table.append(row)
+        print(f"[value/calib] lr {lr:<8} mean train MSE "
+              f"{row['mean_train_mse']:.4f} | min pred_std "
+              f"{row['min_pred_std']:.4f} | max dead units "
+              f"{row['max_dead_units']:.0%}"
+              + ("   <- collapsed" if row["min_pred_std"] < 1e-3 else ""),
+              flush=True)
+
+    live = [r for r in table if r["min_pred_std"] >= 1e-3]
+    if not live:
+        raise SystemExit("[value] every candidate step size collapsed at least "
+                         "one arm. Widen --lr-candidates downward before "
+                         "spending the full budget.")
+    best = min(live, key=lambda r: r["mean_train_mse"])
+    print(f"[value] chosen step size {best['lr']} "
+          f"(mean train MSE {best['mean_train_mse']:.4f}); "
+          f"the same value is used for both arms.", flush=True)
+    return best["lr"], table
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--correlated", required=True, help="expert shards glob")
@@ -88,7 +249,10 @@ def main():
     ap.add_argument("--layers", type=int, default=5)
     ap.add_argument("--steps", type=int, default=8000)
     ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--lr", type=float, default=0.02)
+    ap.add_argument("--lr", type=float, default=0.0,
+                    help="0 = calibrate it (the default); a value pins it")
+    ap.add_argument("--lr-candidates", default="0.02,0.01,0.003,0.001")
+    ap.add_argument("--calib-steps", type=int, default=1200)
     ap.add_argument("--halve-every", type=int, default=3000)
     ap.add_argument("--eval-every", type=int, default=500)
     ap.add_argument("--n-train", type=int, default=0,
@@ -157,79 +321,61 @@ def main():
         "uncorrelated": dict(X=Xu, z=zu, train=unc_train, test=unc_test),
     }
 
+    Xprobe = np.asarray(Xcommon[:256])
+
+    # ---------------- step-size calibration ------------------------------
+    # Both arms, short trials, selected on TRAINING mse -- see the module
+    # docstring for why the selection criterion is not the test set.
+    if a.lr:
+        lr0, calib = a.lr, None
+        print(f"\n[value] step size pinned by --lr {lr0}", flush=True)
+    else:
+        lr0, calib = calibrate_lr(a, arms, Xprobe, Xcommon, zcommon,
+                                  floor_common, device)
+
     results = {}
     for name, arm in arms.items():
-        X, z = arm["X"], arm["z"]
-        tr, te = np.sort(arm["train"]), np.sort(arm["test"])
-        Xtr, ztr = np.asarray(X[tr]), z[tr]
-        Xte, zte = np.asarray(X[te]), z[te]
-        floor_tr, floor_te = const_floor(ztr), const_floor(zte)
-
-        torch.manual_seed(a.seed)
-        net = nets.ValueNet(in_planes=feat.N_PLANES_VALUE,
-                            n_filters=a.filters, n_layers=a.layers).to(device)
-        opt = torch.optim.SGD(net.parameters(), lr=a.lr, momentum=0.0)
-        scaler = torch.amp.GradScaler("cuda", enabled=(device == "cuda"))
-        r = np.random.default_rng(a.seed)
-        hist = []
-        t0 = time.time()
-        print(f"\n[value/{name}] training on {len(tr)} positions; "
-              f"floors: train {floor_tr:.4f} test {floor_te:.4f}", flush=True)
-
-        for step in range(1, a.steps + 1):
-            lr = a.lr * (0.5 ** ((step - 1) // a.halve_every))
-            for gp in opt.param_groups:
-                gp["lr"] = lr
-            idx = np.sort(r.choice(len(tr), size=min(a.batch, len(tr)),
-                                   replace=False))
-            xb = torch.from_numpy(Xtr[idx]).to(device).float()
-            zb = torch.from_numpy(ztr[idx]).to(device)
-            k = int(r.integers(8))
-            if k:
-                xb = apply_sym(xb, k)          # value is symmetry-invariant
-            with torch.autocast("cuda", dtype=torch.float16,
-                                enabled=(device == "cuda")):
-                loss = Fn.mse_loss(net(xb).float(), zb)
-            opt.zero_grad(set_to_none=True)
-            scaler.scale(loss).backward()
-            scaler.step(opt)
-            scaler.update()
-
-            if step % a.eval_every == 0 or step == a.steps:
-                m_tr = mse_on(net, Xtr, ztr, device)
-                m_te = mse_on(net, Xte, zte, device)
-                m_co = mse_on(net, Xcommon, zcommon, device)
-                print(f"[value/{name}] step {step:5d} lr {lr:.5f} | "
-                      f"train MSE {m_tr:.4f} test MSE {m_te:.4f} "
-                      f"gap {m_te - m_tr:+.4f} | common {m_co:.4f} "
-                      f"(floor {floor_common:.4f}) | {time.time()-t0:.0f}s",
-                      flush=True)
-                hist.append(dict(step=step, train_mse=m_tr, test_mse=m_te,
-                                 common_mse=m_co))
+        src = cor if name == "correlated" else unc
+        net, hist = train_arm(name, arm, lr0, a.steps, a, Xprobe, Xcommon,
+                              zcommon, floor_common, device, verbose=True)
+        tr = np.sort(arm["train"])
+        floor_tr = const_floor(arm["z"][tr])
+        floor_te = const_floor(arm["z"][np.sort(arm["test"])])
 
         nets.save(net, os.path.join(a.out, f"value_{name}.pt"),
-                  history=hist, args=vars(a), arm=name)
+                  history=hist, args=vars(a), arm=name, lr_used=lr0)
         best = min(hist, key=lambda h: h["test_mse"])
         results[name] = dict(
             history=hist, floor_train=floor_tr, floor_test=floor_te,
-            floor_common=floor_common,
+            floor_common=floor_common, lr_used=lr0,
             n_train=int(len(tr)),
-            n_train_games=int(len(np.unique(
-                (cor if name == "correlated" else unc)["game_id"][tr]))),
+            n_train_games=int(len(np.unique(src["game_id"][tr]))),
             best_train_mse=best["train_mse"], best_test_mse=best["test_mse"],
             best_gap=best["test_mse"] - best["train_mse"],
-            final_common_mse=hist[-1]["common_mse"])
+            final_train_mse=hist[-1]["train_mse"],
+            final_test_mse=hist[-1]["test_mse"],
+            final_common_mse=hist[-1]["common_mse"],
+            final_pred_std=hist[-1]["pred_std"],
+            final_dead_units=hist[-1]["dead_units"],
+            collapsed=bool(hist[-1]["pred_std"] < 1e-3))
+        if results[name]["collapsed"]:
+            print(f"[value/{name}] COLLAPSED: pred_std "
+                  f"{hist[-1]['pred_std']:.2e}, dead units "
+                  f"{hist[-1]['dead_units']:.0%}. This arm learned nothing, so "
+                  f"C3 cannot be read off it.", flush=True)
 
     with open(os.path.join(a.out, "value_results.json"), "w") as f:
-        json.dump(dict(args=vars(a), results=results), f, indent=2)
+        json.dump(dict(args=vars(a), lr_used=lr0, lr_calibration=calib,
+                       results=results), f, indent=2)
 
     print("\n=== C3: correlated vs uncorrelated value-net training ===")
+    print(f"step size {lr0} for both arms")
     print(f"{'arm':<14}{'games':>8}{'train MSE':>11}{'test MSE':>10}"
-          f"{'gap':>9}{'common':>9}")
+          f"{'gap':>9}{'common':>9}{'pred_std':>10}")
     for name, r_ in results.items():
         print(f"{name:<14}{r_['n_train_games']:>8}{r_['best_train_mse']:>11.4f}"
               f"{r_['best_test_mse']:>10.4f}{r_['best_gap']:>+9.4f}"
-              f"{r_['final_common_mse']:>9.4f}")
+              f"{r_['final_common_mse']:>9.4f}{r_['final_pred_std']:>10.4f}")
     print(f"{'floor':<14}{'-':>8}{'-':>11}{'-':>10}{'-':>9}"
           f"{results['correlated']['floor_common']:>9.4f}")
     print("paper: correlated 0.19 train / 0.37 test (gap +0.18); "
