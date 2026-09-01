@@ -381,6 +381,97 @@ The paper's α_p row is the **SL** network, so C7 as the paper states it does no
 reproduce here; the claim survives only when re-anchored on p_ρ. Recording that
 as a pass would be reporting the wrong network.
 
+### 5.6 Correlated vs uncorrelated value data (C3) — **the primary ablation**
+
+Same network, same objective, same optimiser, same step size (0.2, calibrated —
+§4), **same number of training positions (17,503)**. One thing differs: where
+the positions come from.
+
+| | positions | drawn from | per game | neighbours with opposite labels |
+|---|---|---|---|---|
+| correlated | 17,503 | **576 games** | 30.4 | **59.3%** |
+| uncorrelated | 17,503 | **17,503 games** | 1.0 | 0% |
+
+That last column is the paper's stated mechanism as a number. Because z is from
+the mover's point of view, two consecutive positions of one game differ by a
+single stone and carry *opposite* labels 59.3% of the time. Nearly identical
+inputs with opposite targets, and 17,503 positions carrying only 576 independent
+outcomes.
+
+Trained to 20,000 steps, both arms:
+
+| step | correlated train | correlated test | | uncorrelated train | uncorrelated test |
+|---|---|---|---|---|---|
+| 5,000 | 0.766 | **0.770** | | 0.641 | 0.650 |
+| 8,000 | 0.563 | 0.854 | | 0.587 | **0.624** |
+| 12,000 | 0.335 | 1.027 | | 0.557 | 0.653 |
+| 16,000 | 0.148 | 1.236 | | 0.451 | 0.714 |
+| 20,000 | **0.099** | **1.279** | | 0.360 | 0.756 |
+
+**Confirmed, and more starkly than the paper.** The correlated arm memorises —
+training MSE falls to 0.099, which for 576 distinct outcomes is exactly what
+memorising 576 numbers looks like — while its test MSE climbs to **1.279, worse
+than the constant predictor's 1.000**. It ends up less useful than answering
+"I don't know" to every position. The uncorrelated arm, on the same budget,
+holds test MSE at 0.624 and never crosses the floor.
+
+Read at each arm's best checkpoint, which is the paper's own phrasing:
+
+| | train | test | **common test set** | vs floor 1.000 | vs probe 0.795 |
+|---|---|---|---|---|---|
+| correlated | 0.766 | 0.770 | 0.733 | better | worse |
+| **uncorrelated** | 0.587 | **0.624** | **0.644** | better | **better** |
+| paper | 0.19 → 0.226 | 0.37 → 0.234 | | | |
+
+The final train/test gaps are **+1.18 (correlated) against +0.40
+(uncorrelated)**; the paper's are +0.18 against +0.008. Same direction, larger
+separation, and the reason for the larger separation is that 576 games is a much
+easier thing to memorise than 160,000.
+
+One number keeps this honest. The **analytic probe** — `tanh(a·score + b)` on
+the Tromp-Taylor score, no network at all — scores 0.795. The uncorrelated arm
+beats it (0.644); the correlated arm never does. So the correlated arm is not
+merely "worse", it fails to earn its own existence: at no point in training is
+it better than counting the stones on the board.
+
+### 5.7 Value net vs rollouts (C4) — **refuted, and the reason is the board**
+
+150 expert positions, 100 rollouts each, MSE against the true outcome:
+
+| estimator | MSE | vs floor 0.998 | seconds/position |
+|---|---|---|---|
+| value network (1 forward pass) | 0.799 | 0.801 | **0.011** |
+| 100 rollouts, uniform random | 0.654 | 0.655 | 0.073 |
+| 100 rollouts, p_π | 0.643 | 0.644 | 0.073 |
+| 100 rollouts, p_σ | 0.633 | 0.634 | 1.635 |
+| 100 rollouts, p_ρ | **0.628** | 0.629 | 1.728 |
+
+The paper's Fig. 2b has the value network *below* every rollout curve. Here it
+is **above all four — including uniform random rollouts.** C4 does not
+reproduce.
+
+The mechanism is visible in the per-stage breakdown, and it is the board size:
+
+| move number | 0–15 | 15–30 | 30–45 | 45–60 | 60–80 | 80–200 |
+|---|---|---|---|---|---|---|
+| value net | 1.106 | 1.120 | 1.037 | 0.593 | 0.745 | 0.195 |
+| 100 rollouts, p_π | 1.062 | 1.020 | 0.933 | 0.644 | **0.178** | **0.020** |
+
+Past move 60 the rollouts are nearly *exact* (MSE 0.02 by move 80). On a 9×9
+board a game is over within about 100 moves, so a rollout from move 80 has
+twenty moves of noise left in it and essentially reads out the true result. At
+19×19 the same rollout has 250+ moves to go and is genuinely noisy — which is
+the entire premise of the paper's claim. **The claim is about rollout variance
+over a long horizon, and shortening the board removes the variance it is about.**
+
+This is the clearest case in the reproduction of a claim that fails for the
+resize rather than for itself, and no amount of extra training would fix it: the
+rollouts are near-perfect late, and nothing can beat near-perfect.
+
+The cost column still holds, for what it is worth — one forward pass is 6.5×
+cheaper than 100 p_π rollouts and 150× cheaper than 100 p_ρ rollouts — so the
+value net is the better *rate*, just not the better estimator.
+
 ---
 
 ## 6. Verdict per claim
