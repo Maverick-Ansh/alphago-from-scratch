@@ -61,6 +61,30 @@ network sitting at the floor because it collapsed has ``pred_std`` near zero and
 a large dead fraction; one sitting near the floor because Go is hard has a
 prediction spread and live units.  The two are indistinguishable from the MSE
 column alone, which is exactly why run 1 needed a separate diagnosis.
+
+Where the working step size actually is
+---------------------------------------
+An order of magnitude above the policy network's, around **0.2**, and the
+window is narrow: 0.05 collapses to the constant predictor, 0.2 works, 0.5
+saturates the output tanh at the wrong sign and scores MSE 2.0.  That is not
+arbitrary.  The policy network backpropagates an 81-way softmax from every
+position; the value network backpropagates one scalar through a deeper trunk
+and a 1x1 collapse to 81 numbers, so the gradient arriving at the trunk is far
+smaller for the same nominal step size.  Momentum 0.9 at lr 0.01 also works
+(MSE 0.90) and is the same effective step, but plain SGD is kept because it is
+what the paper describes.
+
+The floor is not the only reference
+------------------------------------
+An MSE of 0.87 against a floor of 1.00 sounds like almost nothing.  It is not,
+and the way to know is to bracket the task from *above* as well as below.
+``score_probe`` fits ``v = tanh(a * s + b)`` where ``s`` is the Tromp-Taylor
+score of the position itself -- no network, no search, one number already
+sitting in the rules engine.  It reaches MSE 0.79.  So the interval that
+matters is not [0, 1.00] but roughly [0.79, 1.00], and a value network at 0.87
+has covered about two thirds of the distance an analytic reading of the board
+covers.  Reporting the network's MSE without that bound invites reading a real
+result as a failure, or a failure as a real result.
 """
 
 import argparse
@@ -76,7 +100,7 @@ import torch.nn.functional as Fn
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ag import data, features as feat, nets
+from ag import data, features as feat, go, nets
 from ag.go import BLACK, N, NN
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -92,6 +116,41 @@ def z_for_player(ds):
 def const_floor(z):
     """MSE of the best constant predictor: 1 - E[z]^2 for z in {-1,+1}."""
     return float(np.mean((z - z.mean()) ** 2))
+
+
+def score_probe(ds, train_idx, test_idx, z):
+    """MSE of ``tanh(a*score + b)``: the board's own arithmetic as a baseline.
+
+    The constant-predictor floor says how badly a value function can do while
+    still being defensible.  This says how well one can do without a value
+    function at all -- the Tromp-Taylor score of the position, squashed and
+    calibrated, using a quantity the rules engine already computes.  A network
+    that does not clear this is not adding anything to the score; one that
+    approaches it is doing roughly as well as counting.
+
+    ``a`` and ``b`` are fitted on the training split only, so the number
+    reported on the held-out split is a fair comparison with the network's.
+    """
+    s = np.array([go.score_tromp_taylor(data.decode(ds, int(i)).board,
+                                        go.NBRS, go.KOMI) for i in
+                  np.concatenate([train_idx, test_idx])], dtype=np.float64)
+    sgn = np.where(ds["to_play"][np.concatenate([train_idx, test_idx])] == BLACK,
+                   1.0, -1.0)
+    s *= sgn
+    ntr = len(train_idx)
+    str_, ste = s[:ntr], s[ntr:]
+    ztr, zte = z[train_idx], z[test_idx]
+    best = None
+    for a_ in np.linspace(0.005, 1.0, 80):
+        for b_ in np.linspace(-1.0, 1.0, 21):
+            m = float(np.mean((np.tanh(a_ * str_ + b_) - ztr) ** 2))
+            if best is None or m < best[0]:
+                best = (m, a_, b_)
+    _, a_, b_ = best
+    return dict(a=float(a_), b=float(b_),
+                train_mse=float(np.mean((np.tanh(a_ * str_ + b_) - ztr) ** 2)),
+                test_mse=float(np.mean((np.tanh(a_ * ste + b_) - zte) ** 2)),
+                sign_accuracy=float(np.mean(np.sign(ste) == np.sign(zte))))
 
 
 def collapse_report(net, Xprobe, device):
@@ -229,9 +288,12 @@ def calibrate_lr(a, arms, Xprobe, Xcommon, zcommon, floor_common, device):
 
     live = [r for r in table if r["min_pred_std"] >= 1e-3]
     if not live:
-        raise SystemExit("[value] every candidate step size collapsed at least "
-                         "one arm. Widen --lr-candidates downward before "
-                         "spending the full budget.")
+        raise SystemExit(
+            "[value] every candidate step size collapsed at least one arm. "
+            "The working window is narrow and bounded on BOTH sides -- too "
+            "small collapses to the constant predictor, too large saturates "
+            "the output tanh -- so widen --lr-candidates in both directions, "
+            "not just downward, before spending the full budget.")
     best = min(live, key=lambda r: r["mean_train_mse"])
     print(f"[value] chosen step size {best['lr']} "
           f"(mean train MSE {best['mean_train_mse']:.4f}); "
@@ -251,8 +313,8 @@ def main():
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=0.0,
                     help="0 = calibrate it (the default); a value pins it")
-    ap.add_argument("--lr-candidates", default="0.02,0.01,0.003,0.001")
-    ap.add_argument("--calib-steps", type=int, default=1200)
+    ap.add_argument("--lr-candidates", default="0.35,0.25,0.2,0.15,0.1")
+    ap.add_argument("--calib-steps", type=int, default=1500)
     ap.add_argument("--halve-every", type=int, default=3000)
     ap.add_argument("--eval-every", type=int, default=500)
     ap.add_argument("--n-train", type=int, default=0,
@@ -323,6 +385,14 @@ def main():
 
     Xprobe = np.asarray(Xcommon[:256])
 
+    # The upper bracket: what the score alone already tells you.
+    probe = score_probe(unc, np.sort(unc_train), np.sort(common), zu)
+    print(f"[value] ANALYTIC PROBE tanh({probe['a']:.3f}*score{probe['b']:+.2f}) "
+          f"scores MSE {probe['test_mse']:.4f} on the common test set "
+          f"(sign accuracy {probe['sign_accuracy']:.1%}). The interval that "
+          f"matters is [{probe['test_mse']:.2f}, {floor_common:.2f}], not "
+          f"[0, {floor_common:.2f}].", flush=True)
+
     # ---------------- step-size calibration ------------------------------
     # Both arms, short trials, selected on TRAINING mse -- see the module
     # docstring for why the selection criterion is not the test set.
@@ -366,7 +436,7 @@ def main():
 
     with open(os.path.join(a.out, "value_results.json"), "w") as f:
         json.dump(dict(args=vars(a), lr_used=lr0, lr_calibration=calib,
-                       results=results), f, indent=2)
+                       score_probe=probe, results=results), f, indent=2)
 
     print("\n=== C3: correlated vs uncorrelated value-net training ===")
     print(f"step size {lr0} for both arms")
@@ -378,6 +448,9 @@ def main():
               f"{r_['final_common_mse']:>9.4f}{r_['final_pred_std']:>10.4f}")
     print(f"{'floor':<14}{'-':>8}{'-':>11}{'-':>10}{'-':>9}"
           f"{results['correlated']['floor_common']:>9.4f}")
+    print(f"{'score probe':<14}{'-':>8}{probe['train_mse']:>11.4f}"
+          f"{probe['test_mse']:>10.4f}{'-':>9}{probe['test_mse']:>9.4f}"
+          f"   <- no network at all")
     print("paper: correlated 0.19 train / 0.37 test (gap +0.18); "
           "uncorrelated 0.226 / 0.234 (gap +0.008)")
 

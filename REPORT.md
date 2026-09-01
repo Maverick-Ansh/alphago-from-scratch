@@ -261,8 +261,10 @@ origin, looking like evidence *for* the claim.
 
 ## 5. Results
 
-> **Partial — the run is in progress.** Everything below is measured and final;
-> the tournament (C5/C6/C7), Fig 2b (C4) and the C3 arms are still running.
+> **Run 2.** Run 1's numbers are superseded: two of its three policy networks
+> were measured against blank boards (§4), so its SL accuracies and its
+> step-size conclusion were both wrong. Everything below is from a single
+> end-to-end run on a sound cache, with twice the data.
 
 ### 5.0 The instrument, measured before the sweep (`check_eval.py` → PASS)
 
@@ -271,71 +273,76 @@ should be read.
 
 | quantity | value | why it matters |
 |---|---|---|
-| **Teacher self-agreement** | **37.5%** (n=120) | The **ceiling on C1**. The teacher is a stochastic MCTS; run twice on the same position it picks the same move only 37.5% of the time. No policy network can exceed this. |
-| Teacher vs its stored label | 40.8% | consistency of the recorded targets |
-| Constant-predictor value MSE | **1.0000** (E[z] = +0.001) | the **floor for C3/C4**; outcomes are perfectly balanced |
-| Black win rate, teacher games | 52.4% | komi 7.5 is close to fair at this strength |
-| Black win rate, random play | ~39% (pooled, 100 games) | white is favoured under random play; paired colours neutralise it |
-| Teacher vs random | 100% [90,100] | the Elo bracket is wide enough to hold everything |
+| **Teacher self-agreement** | **31.7%** (n=120) | The **ceiling on C1**. The teacher is a stochastic MCTS; run twice on the same position it picks the same move only 31.7% of the time. No policy network can exceed this. |
+| Teacher vs its stored label | 33.3% | consistency of the recorded targets |
+| Constant-predictor value MSE | **1.0000** (E[z] = +0.002) | the **floor for C3/C4**; outcomes are almost perfectly balanced |
+| Black win rate, teacher games | 51.0% | komi 7.5 is close to fair at this strength |
+| Black win rate, random play | 30.0% | white is favoured under random play; paired colours neutralise it |
+| Teacher vs random | 97.5% [86,100] | the Elo bracket is wide enough to hold everything |
 | **always-pass vs random** | **loses 100%** | no degenerate shortcut: scoring and komi are sound |
 | first-point vs random | 50% [35,65] | a fixed content-free policy is no better than random |
-| p_π vs random | 80% [65,90] | the trained rollout policy is meaningfully better than random |
-| Elo span, random → 100-sim MCTS | ~950 Elo | resolution: 25→100 sims separates with non-overlapping CIs at 10 games/pair |
+| p_π vs random | 75% [60,86] | the trained rollout policy is meaningfully better than random |
+
+The C1 ceiling moved from 37.5% (run 1) to 31.7% here on the same n=120 — a
+reminder that the ceiling is itself an estimate with a wide interval, and that
+every "% of ceiling" below inherits that width.
 
 ### 5.1 Data
 
-320 teacher games at 128 simulations → **31,104 positions** (29,926 non-pass),
-mean game length 97 moves, Black winning 52.4%.
+640 teacher games at 128 simulations → **61,817 positions** (59,511 non-pass),
+split by game into 53,608 train / 5,903 test. Black wins 51.0%. Generation ran
+at 8.8 s/game across 4 workers, ~23 minutes.
 
 ### 5.2 The fast rollout policy p_π
-
-**18.31%** move-prediction accuracy on held-out games (paper: 24.2% on 19×19
-against human experts, from 8M positions).
 
 The learned tactical weights are interpretable, which is the useful part —
 they were fit from data, not set by hand:
 
 | feature | weight |
 |---|---|
-| captures ≥1 stone | **+0.943** |
-| saves a chain from atari | **+0.588** |
-| captures ≥2 stones | +0.032 |
-| self-atari | +0.097 |
+| captures ≥1 stone | **+0.825** |
+| saves a chain from atari | **+0.328** |
+| captures ≥2 stones | +0.077 |
+| self-atari | +0.042 |
 
 Capture and save-from-atari — the two moves that actually decide Go rollouts —
-come out on top on their own.
+come out on top on their own, from data, with no hand-set priors.
 
 ### 5.3 The SL policy network (C1)
 
-All at step size 0.01 after the collapse described in §4; 25,000 steps,
-mini-batch 256, plain SGD without momentum.
+Step size 0.05 (§4), 25,000 steps, mini-batch 256, plain SGD without momentum,
+8× dihedral augmentation, split by game.
 
-| width | parameters | test accuracy | top-5 | vs the 37.5% ceiling |
+| width | parameters | test accuracy | top-5 | vs the 31.7% ceiling |
 |---|---|---|---|---|
-| k=32 | 83,185 | 23.66% | 48.2% | 63% |
-| **k=64** | **258,449** | **24.88%** | **48.7%** | **66%** |
-| k=128 | 885,457 | ~24.5% | 48.0% | 65% |
+| k=32 | 83,185 | **25.16%** | 48.6% | 79% |
+| k=64 | 258,449 | 24.87% | 49.7% | 78% |
+| k=128 | 885,457 | 25.12% | 49.9% | 79% |
 
 Read against the ceiling, not against 100%: **the policy network captures about
-two-thirds of the teacher's own reproducibility.**
+four-fifths of the teacher's own reproducibility.**
 
-k=64's trajectory, which is what C1's accuracy axis actually uses:
-18.31% (step 2.5k) → 23.56% (5k) → 24.31% (10k) → 24.88% (25k).
+**Width does essentially nothing here, and in the paper it does** (128→256
+filters moved accuracy 54.6%→55.9% and the raw-net win rate 36%→67%). The three
+widths land within 0.3 points of each other across a 10× parameter range. At
+54k training positions capacity is not the bottleneck, data is — so C1's
+accuracy axis has to come from training-time checkpoints rather than width, and
+the width sweep is reported as the null result it is.
 
-**Width saturates here, and the paper's does not** (128→256 filters moved it
-54.6%→55.9%). At 31k training positions, k=128 is slightly *worse* than k=64
-and has a higher test loss (2.94 vs 2.84) — capacity is not the bottleneck,
-data is. So C1's accuracy axis comes from training time rather than width.
+### 5.4 RL policy gradient (C2) — **confirmed**
 
-### 5.4 RL policy gradient (C2) — *in progress*
+Sanity check before any update: RL(=SL) vs SL = **0.520**, i.e. ≈ 0.5 as it must
+be, which is what says the harness is not scoring one side wrong.
 
-Sanity check before any update: RL(=SL) vs SL = **0.460**, i.e. ≈ 0.5 as it must
-be. After 25 iterations the RL policy beats its SL initialisation **77.0%** of
-the time (100 games). The paper reports >80%.
+| iteration | 25 | 50 | 75 | 150 | 200 |
+|---|---|---|---|---|---|
+| RL vs SL win rate (100 games) | 75.0% | 82.0% | 91.0% | 99.0% | **100.0%** |
 
-### 5.5 C3, C4, C5, C6, C7
-
-*Running.*
+The paper reports "more than 80% of games against the SL policy network". Here
+it passes 80% by iteration 50 and reaches 100/100 by iteration 200 — a stronger
+result than the paper's, and a fair reading is that it is *easier* here: the SL
+policy is distilled from a 128-simulation MCTS rather than from human dan play,
+so there is more headroom above it and less to preserve.
 
 ---
 
