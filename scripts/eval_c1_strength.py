@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ag import nets
 from ag.arena import match
-from ag.players import MCTSPlayer, PolicyNetPlayer
+from ag.players import MCTSPlayer, PolicyNetPlayer, RolloutPolicyPlayer
 from ag.rollout import RolloutPolicy
 
 
@@ -44,6 +44,14 @@ def main():
     ap.add_argument("--runs", default="/content/runs")
     ap.add_argument("--rollout", default="/content/runs/rollout.npz")
     ap.add_argument("--ref-sims", type=int, default=30)
+    ap.add_argument("--ref-kind", default="mcts", choices=("mcts", "p_pi"),
+                    help="the frozen opponent: 'mcts' at --ref-sims, or the "
+                         "rollout policy, which sits much closer to these "
+                         "networks and so resolves them better")
+    ap.add_argument("--n-points", type=int, default=3,
+                    help="checkpoints per width; taking more of them, from "
+                         "early in training, is where the accuracy axis gets "
+                         "its range")
     ap.add_argument("--games", type=int, default=40)
     ap.add_argument("--gate", default="/content/runs/eval_gate.json")
     ap.add_argument("--out", default="/content/runs/c1_strength.json")
@@ -54,8 +62,17 @@ def main():
         else RolloutPolicy()
 
     # One frozen opponent for every measurement, so the y-axis is a fixed ruler.
-    ref = MCTSPlayer(name="ref", n_sims=a.ref_sims, lmbda=1.0, rollout=rp,
-                     rng=np.random.default_rng(99))
+    # Which opponent it is matters as much as freezing it.  A reference far
+    # stronger than everything being measured pins every win rate near zero and
+    # leaves the plot no vertical range to show a trend in -- the y-axis needs
+    # bracketing exactly as carefully as the x-axis, and the first run of this
+    # stage did not get it (§5.9).
+    if a.ref_kind == "p_pi":
+        ref = RolloutPolicyPlayer(rp)
+        ref.name = "ref_p_pi"
+    else:
+        ref = MCTSPlayer(name="ref", n_sims=a.ref_sims, lmbda=1.0, rollout=rp,
+                         rng=np.random.default_rng(99))
 
     ceiling = None
     if os.path.exists(a.gate):
@@ -80,8 +97,15 @@ def main():
     todo = []
     for k, lst in sorted(chosen.items()):
         lst.sort()
-        pick = [lst[len(lst) // 4], lst[len(lst) // 2], lst[-1]] if len(lst) >= 4 \
-            else lst
+        if len(lst) <= a.n_points:
+            pick = lst
+        else:
+            # Spread over the WHOLE run, earliest checkpoint included. Accuracy
+            # saturates quickly here, so the only place the x-axis has spread
+            # is the first few thousand steps; sampling from the middle onwards
+            # gives a plot whose points all sit on top of one another.
+            sel = np.linspace(0, len(lst) - 1, a.n_points).round().astype(int)
+            pick = [lst[i] for i in dict.fromkeys(sel.tolist())]
         for step, path in pick:
             todo.append((k, step, path))
 
@@ -112,8 +136,26 @@ def main():
     else:
         rho = float("nan")
 
+    # Whether C1 is answerable at all is a property of these two ranges, and it
+    # has to be printed next to the answer. A rank correlation over points that
+    # all sit inside one another's error bars is a number, not a result.
+    acc_a = np.array([p["test_acc"] for p in points])
+    wr_a = np.array([p["win_rate"] for p in points])
+    half_ci = float(np.mean([(p["ci"][1] - p["ci"][0]) / 2 for p in points]))
+    spread = dict(acc_range=float(acc_a.max() - acc_a.min()),
+                  win_rate_range=float(wr_a.max() - wr_a.min()),
+                  mean_half_ci=half_ci,
+                  resolvable=bool(wr_a.max() - wr_a.min() > 2 * half_ci))
+    print(f"[C1] accuracy spans {100*spread['acc_range']:.1f} points; win rate "
+          f"spans {100*spread['win_rate_range']:.0f} points against a mean "
+          f"half-CI of {100*half_ci:.0f} points -> "
+          + ("the axes have range" if spread["resolvable"] else
+             "NOT RESOLVABLE: the win-rate spread fits inside the error bars, "
+             "so any trend here would be a measurement of nothing"), flush=True)
+
     out = dict(points=points, histories=histories, ceiling=ceiling,
                spearman_acc_vs_winrate=rho, ref_sims=a.ref_sims,
+               ref_kind=a.ref_kind, spread=spread,
                games_per_point=a.games)
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     with open(a.out, "w") as f:

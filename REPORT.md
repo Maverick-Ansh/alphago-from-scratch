@@ -472,6 +472,70 @@ The cost column still holds, for what it is worth — one forward pass is 6.5×
 cheaper than 100 p_π rollouts and 150× cheaper than 100 p_ρ rollouts — so the
 value net is the better *rate*, just not the better estimator.
 
+### 5.8 The ablation round robin (C5, C6)
+
+Ten players, 45 pairs, 12 paired-colour games each, 100 simulations for every
+search player. Random anchored at 0.
+
+| player | components | Elo | 95% CI |
+|---|---|---|---|
+| `rvp_rl` | p_ρ prior, v_θ, p_π, λ=0.5 | **1524** | [1353, 1701] |
+| `p_rl` | RL policy, **no search** | **1358** | [1201, 1552] |
+| `a_rp` | p_σ prior, p_π, λ=1 | 894 | [700, 1080] |
+| `a_r` | p_π, λ=1, uniform prior | 781 | [624, 957] |
+| `a_v` | v_θ, λ=0, uniform prior | 765 | [615, 939] |
+| `a_rvp` | p_σ prior, v_θ, p_π, λ=0.5 | 671 | [471, 885] |
+| `p_pi` | rollout policy alone | 180 | [−18, 380] |
+| `p_sl` | SL policy, no search | 128 | [−55, 342] |
+| `a_vp` | p_σ prior, v_θ, λ=0 | 92 | [−94, 281] |
+| `random` | — | 0 | — |
+
+**C5 (λ=0.5 beats λ=0 and λ=1): half confirmed, half refuted.**
+
+| | | |
+|---|---|---|
+| λ=0.5 (`a_rvp`) vs λ=0 (`a_vp`) | **12/12 = 100%** [72,100] | mixing beats value-only ✓ |
+| λ=0.5 (`a_rvp`) vs λ=1 (`a_rp`) | **4/12 = 33%** [14,61] | mixing **loses** to rollout-only ✗ |
+
+Elo says the same: 671 for λ=0.5 against 894 for λ=1. The paper has λ=0.5 on top
+(α_rvp 2890 > α_rp 2416 > α_vp 2177). Here the ordering is λ=1 > λ=0.5 > λ=0.
+
+This follows directly from §5.7 and is the same fact seen from the search side.
+Mixing in an estimator that is *worse* than the one you already have makes the
+blend worse, and at 9×9 the value network is worse than the rollouts. C5 is not
+independently refuted — it is C4's refutation propagating.
+
+**C6 (the SL policy is a better MCTS prior than the stronger RL policy):
+refuted, on both halves.**
+
+| | | |
+|---|---|---|
+| raw p_ρ vs raw p_σ | **12/12 = 100%** [72,100] | RL is the stronger *player* ✓ (this is C2) |
+| MCTS[p_σ] (`a_rvp`) vs MCTS[p_ρ] (`rvp_rl`) | **0/12 = 0%** [0,28] | RL is also the better *prior* ✗ |
+
+The claim requires both halves, and the second fails as completely as a 12-game
+match can fail. 1524 Elo against 671: the RL prior is worth ~850 Elo over the SL
+prior, in the same program with everything else identical.
+
+The paper's reasoning for C6 is that "humans select a diverse beam of promising
+moves, whereas RL optimizes for the single best move" — a claim about the
+*diversity* of a prior distilled from **human** play. There are no humans here.
+Both priors are distilled from the same MCTS teacher and then one is sharpened
+by self-play, so the diversity the paper credits to human variety was never
+present to be lost. C6 is the claim in this set that the resize most directly
+removes the conditions for, and the number is reported as a refutation of the
+*sentence*, not as evidence against the paper's reading of its own system.
+
+**The instrument's own reading.** One row is worth pausing on: `a_vp` (92 Elo)
+lands *below* `a_v` (765), so adding the SL prior to a value-only search costs
+673 Elo. That is not noise — `a_vp` sits within its CI of `p_sl` (128), which is
+what it means for a search to have stopped searching. With λ=0 the only signal
+is a value network that §5.7 showed is barely better than counting, so PUCT
+follows the prior and reproduces it. Every arm that leans on the value network
+(`a_vp`, `a_rvp`) is dragged toward it; every arm that leans on rollouts
+(`a_r`, `a_rp`) is not. The whole table is one story: **at 9×9 the value network
+is the weak component**, and C4, C5 and this row are three views of it.
+
 ---
 
 ## 6. Verdict per claim
