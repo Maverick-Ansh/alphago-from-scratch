@@ -55,34 +55,109 @@ from ag.go import N, NN, PASS
 # --------------------------------------------------------------------------
 # feature cache
 # --------------------------------------------------------------------------
-def build_feature_cache(ds, path, with_colour=False, log_every=20000):
+def check_cache(arr, path=""):
+    """Is every row of a feature cache actually written?
+
+    ``P_ONES`` is a constant plane of ones, set at every point of every
+    position, so a valid row can never be all zeros.  That makes an unwritten
+    row detectable exactly rather than heuristically: reading one plane over
+    the whole cache costs a few megabytes and turns a silent wrong answer into
+    a refusal.  The rows that go missing are the last ones, which is also the
+    held-out set, which is why the symptom was a nonsense test accuracy on an
+    otherwise healthy network.
+    """
+    ok = bool(np.asarray(arr[:, feat.P_ONES]).all())
+    if not ok:
+        bad = int((~np.asarray(arr[:, feat.P_ONES]).any(axis=(1, 2))).sum())
+        print(f"[cache] {path} is INCOMPLETE: {bad}/{len(arr)} rows unwritten",
+              flush=True)
+    return ok
+
+
+def build_feature_cache(ds, path, with_colour=False, log_every=20000,
+                        wait_timeout=1800):
     """Extract planes once and memoise them as uint8 on disk.
 
     Every plane is binary, so uint8 costs a quarter of float32 and loses
     nothing.  Extraction is ~250 us/position (it simulates a move at every
     empty point), which would starve the GPU if done per epoch.
+
+    The build is **atomic**, and that is not a nicety.  ``open_memmap`` creates
+    the file at its full final size, zero filled, and then fills it row by row
+    over several seconds.  A second process starting inside that window found a
+    file of exactly the right shape, took the "reusing" branch, and read zeros.
+    Training survived it -- the training set is re-read from the memmap every
+    step, so it becomes real as soon as the build finishes -- but the held-out
+    set is copied into RAM once, at startup, and stayed zeros for the entire
+    run.  Two of three widths then reported a test accuracy of 1.4% while
+    actually being fine, and it was recorded as a step-size collapse
+    (REPORT.md section 4).  A wrong number that looks like a plausible result
+    is worse than a crash.
+
+    So: one process builds, under a lock, into a temporary file that is renamed
+    into place only when complete, and the others wait for the rename.  A
+    reader can now only ever see a finished cache.  If the lock is stale the
+    waiter builds its own copy rather than deadlocking -- duplicated work is
+    the cheap failure here.
     """
     n = len(ds["boards"])
     n_planes = feat.N_PLANES_VALUE if with_colour else feat.N_PLANES_POLICY
-    if os.path.exists(path):
+    want = (n, n_planes, N, N)
+
+    def ready():
+        if not os.path.exists(path):
+            return None
         arr = np.load(path, mmap_mode="r")
-        if arr.shape == (n, n_planes, N, N):
-            print(f"[cache] reusing {path} {arr.shape}", flush=True)
-            return arr
-        print(f"[cache] {path} has shape {arr.shape}, expected "
-              f"{(n, n_planes, N, N)}; rebuilding", flush=True)
-    fx = feat.FeatureExtractor(with_colour=with_colour)
-    arr = np.lib.format.open_memmap(path, mode="w+", dtype=np.uint8,
-                                    shape=(n, n_planes, N, N))
-    t0 = time.time()
-    for i in range(n):
-        arr[i] = fx(data.decode(ds, i)).astype(np.uint8)
-        if (i + 1) % log_every == 0:
-            el = time.time() - t0
-            print(f"[cache] {i+1}/{n}  {el:.0f}s  eta {el/(i+1)*(n-i-1):.0f}s",
-                  flush=True)
-    arr.flush()
-    print(f"[cache] built {path} in {time.time()-t0:.0f}s", flush=True)
+        return arr if arr.shape == want and check_cache(arr, path) else False
+
+    arr = ready()
+    if arr is not None and arr is not False:
+        print(f"[cache] reusing {path} {arr.shape}", flush=True)
+        return arr
+    if arr is False:
+        print(f"[cache] {path} has the wrong shape, expected {want}; "
+              f"rebuilding", flush=True)
+
+    lock = path + ".lock"
+    try:
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        builder = True
+    except FileExistsError:
+        builder = False
+
+    if not builder:
+        t0 = time.time()
+        while time.time() - t0 < wait_timeout:
+            arr = ready()
+            if arr is not None and arr is not False:
+                print(f"[cache] another process built {path} "
+                      f"({time.time()-t0:.0f}s wait)", flush=True)
+                return arr
+            time.sleep(2)
+        print(f"[cache] waited {wait_timeout}s for {path}; building a private "
+              f"copy instead of deadlocking", flush=True)
+
+    tmp = f"{path}.tmp{os.getpid()}"
+    try:
+        fx = feat.FeatureExtractor(with_colour=with_colour)
+        arr = np.lib.format.open_memmap(tmp, mode="w+", dtype=np.uint8,
+                                        shape=want)
+        t0 = time.time()
+        for i in range(n):
+            arr[i] = fx(data.decode(ds, i)).astype(np.uint8)
+            if (i + 1) % log_every == 0:
+                el = time.time() - t0
+                print(f"[cache] {i+1}/{n}  {el:.0f}s  "
+                      f"eta {el/(i+1)*(n-i-1):.0f}s", flush=True)
+        arr.flush()
+        del arr
+        os.replace(tmp, path)          # atomic: readers see all or nothing
+        print(f"[cache] built {path} in {time.time()-t0:.0f}s", flush=True)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        if builder and os.path.exists(lock):
+            os.remove(lock)
     return np.load(path, mmap_mode="r")
 
 
@@ -206,9 +281,16 @@ def main():
     tr, te = split_by_game(ds, test_frac=0.1, seed=a.seed)
     print(f"[{tag}] train {len(tr)} / test {len(te)} (split by game)", flush=True)
 
-    # The held-out set is small enough to hold in RAM as uint8.
+    # The held-out set is small enough to hold in RAM as uint8.  It is copied
+    # out once, which is exactly why it has to be checked here: a training set
+    # re-read from the memmap every step recovers from a half-built cache, and
+    # a held-out set copied at startup never does.
     Xte = np.asarray(X[te])
     yte = y[te]
+    if not check_cache(Xte, "the held-out slice"):
+        raise SystemExit(f"[{tag}] the held-out features are not fully "
+                         f"written. Every accuracy this run reported would be "
+                         f"measured against blank boards.")
 
     net = nets.PolicyNet(in_planes=feat.N_PLANES_POLICY,
                          n_filters=a.filters, n_layers=a.layers).to(device)
